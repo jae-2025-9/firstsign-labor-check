@@ -2,7 +2,7 @@ import {describe,it,expect,vi,afterEach} from 'vitest';
 import {readFile} from 'node:fs/promises';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
-import {review_stream} from '../src/lib/review-stream';
+import {review_stream,STREAM_CHUNK_BYTES} from '../src/lib/review-stream';
 import {cached_criteria} from '../src/lib/criteria-cache';
 import {criteria_source_codes} from '../src/lib/criteria-source';
 import {CrossCheckNotice,IncompleteNotice} from '../src/components/ReviewStatus';
@@ -22,6 +22,13 @@ describe('stream lifetime',()=>{
   expect(events.filter(e=>e.type==='heartbeat')).toHaveLength(29);
   expect(events.at(-1)).toEqual({type:'result',result:{level:'safe'}});
   expect(vi.getTimerCount()).toBe(0);
+ });
+ it('transmits large Korean result events in bounded chunks without data loss',async()=>{
+  const result={text:'한글 결과'.repeat(150000)};
+  const reader=review_stream(async()=>result).getReader();const decoder=new TextDecoder();let body='';let chunks=0;
+  while(true){const {done,value}=await reader.read();if(done)break;expect(value.byteLength).toBeLessThanOrEqual(STREAM_CHUNK_BYTES);body+=decoder.decode(value,{stream:true});chunks++;}
+  body+=decoder.decode();expect(chunks).toBeGreaterThan(10);
+  expect(JSON.parse(body.trim().split('\n').at(-1)!)).toEqual({type:'result',result});
  });
  it('does not expose unexpected exception details',async()=>{
   const body=await new Response(review_stream(async()=>{throw Error('private-document-body');})).text();
