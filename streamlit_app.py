@@ -268,8 +268,13 @@ def render_summary(result: dict):
         """
     )
 
+    if engine["criteria_problems"]:
+        st.warning("점검 기준서 추출 결과에 문제가 있어 규칙 계산 등급을 내지 않았습니다: " + ", ".join(engine["criteria_problems"]))
+
     if final["level"] is None:
         st.info("일부 규칙을 판단하지 못해 등급을 정하지 않았습니다. 아래 '판단 보류' 항목을 계약서 원문으로 확인하세요.")
+    elif final["incomplete"]:
+        st.info(f"판단하지 못한 규칙이 있어 최소 '{LEVEL_LABELS[final['level']]}' 등급입니다. 아래 '판단 보류' 항목을 계약서 원문으로 확인하세요.")
 
     col1, col2, col3 = st.columns(3)
 
@@ -462,6 +467,10 @@ def render_details(result: dict):
             st.caption(f"참고: {note}")
 
     final = result["final"]
+
+    if final and final["agent_summary"] and final["agent_summary"] != final["summary"]:
+        with st.expander("평가 에이전트 원문 요약"):
+            st.text(final["agent_summary"])
 
     if final and final["confirmed_items"]:
         with st.expander("기준을 충족한 항목"):

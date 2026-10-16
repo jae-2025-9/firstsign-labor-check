@@ -122,13 +122,23 @@ class AgentClient:
         job_id: str,
         interval: int = 2
     ):
+        """
+        Job이 끝날 때까지 상태를 조회한다.
+
+        AGENT_TIMEOUT_SECONDS 안에서만 새 조회를 시작하고, 각 조회의 HTTP 제한 시간도
+        남은 시간으로 줄인다. 제한 시간 안에 완료 응답을 받았으면(조금 늦게 도착해도) 결과를 쓴다.
+        """
 
         deadline = time.monotonic() + AGENT_TIMEOUT_SECONDS
 
-        response = get_client().responses.retrieve(
-            job_id,
-            include=["last"]
-        )
+        def retrieve():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AgentError(f"{self.name} 응답이 {AGENT_TIMEOUT_SECONDS}초 안에 끝나지 않았습니다.")
+            client = get_client().with_options(timeout=min(HTTP_TIMEOUT_SECONDS, max(remaining, 1.0)))
+            return client.responses.retrieve(job_id, include=["last"])
+
+        response = retrieve()
 
         print(f"[{self.name}] Status : {response.status}")
 
@@ -137,18 +147,9 @@ class AgentClient:
             "in_progress"
         ):
 
-            if time.monotonic() > deadline:
+            time.sleep(min(interval, max(deadline - time.monotonic(), 0)))
 
-                raise AgentError(
-                    f"{self.name} 응답이 {AGENT_TIMEOUT_SECONDS}초 안에 끝나지 않았습니다."
-                )
-
-            time.sleep(interval)
-
-            response = get_client().responses.retrieve(
-                job_id,
-                include=["last"]
-            )
+            response = retrieve()
 
             print(f"[{self.name}] Status : {response.status}")
 
@@ -251,37 +252,34 @@ def find_classification(
     """
     응답 원본에서 Classify 노드가 고른 분류 이름을 찾는다.
 
-    분류 이름은 응답 구조 안 어딘가에 문자열로 들어 있다.
-    키 이름에 class, category, label이 들어간 값을 먼저 보고,
-    없으면 값이 분류 이름과 정확히 같은 문자열을 찾는다.
+    실행 결과(응답의 output 아래)에서 찾은 후보를 먼저 보고, 없을 때만 응답 전체를 본다.
+    응답에 워크플로우 정의(분류 이름 3개)가 함께 실려 있어도 실행 결과가 가려지지 않게 하기 위해서다.
+    같은 범위에서 서로 다른 후보가 섞여 있으면 고르지 않고 None을 돌려준다.
+    output_text 안의 JSON 문자열은 여기서 보지 않는다. 그 안의 값은 결과 스키마가 처리한다.
     """
 
-    preferred: list[str] = []
-    anywhere: list[str] = []
+    found: list[tuple[bool, bool, str]] = []
 
-    def walk(node, key=""):
+    def walk(node, key="", in_output=False):
 
         if isinstance(node, dict):
             for k, v in node.items():
-                walk(v, str(k).lower())
+                name = str(k).lower()
+                walk(v, name, in_output or name == "output")
 
         elif isinstance(node, list):
             for v in node:
-                walk(v, key)
+                walk(v, key, in_output)
 
         elif isinstance(node, str) and node in labels:
-            if any(word in key for word in ("class", "category", "label", "condition")):
-                preferred.append(node)
-            else:
-                anywhere.append(node)
+            named = any(word in key for word in ("class", "category", "label", "condition"))
+            found.append((in_output, named, node))
 
     walk(raw)
 
-    # 응답에 워크플로우 정의(분류 이름 3개)가 함께 들어 있을 수 있다.
-    # 서로 다른 후보가 섞여 있으면 고르지 않고 None을 돌려준다.
-    # output_text 안의 JSON 문자열은 여기서 보지 않는다. 그 안의 값은 결과 스키마가 처리한다.
-    for candidates in (preferred, anywhere):
+    for in_output, named in ((True, True), (True, False), (False, True), (False, False)):
+        candidates = {label for o, n, label in found if o == in_output and n == named}
         if candidates:
-            return candidates[0] if len(set(candidates)) == 1 else None
+            return candidates.pop() if len(candidates) == 1 else None
 
     return None

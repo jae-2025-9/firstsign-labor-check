@@ -16,6 +16,7 @@ import io
 import shutil
 import uuid
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from openai import APIConnectionError, APIStatusError, RateLimitError
@@ -32,7 +33,7 @@ from config import (
     is_live_ready
 )
 from agent_client import AgentError
-from app import CriteriaError, normalize_review, run_workflow
+from app import CriteriaError, criteria_source_codes, normalize_review, run_workflow
 from file_manager import load_json
 from review_builder import build_review_input, contract_rows
 from rules import (
@@ -44,6 +45,17 @@ from rules import (
 )
 
 MAX_PAGES = 20
+
+
+@lru_cache(maxsize=1)
+def source_codes() -> frozenset[str] | None:
+    """
+    고정 기준서 PDF 원문의 규칙 코드 (한 번만 읽는다)
+    """
+
+    codes = criteria_source_codes()
+
+    return frozenset(codes) if codes else None
 
 
 ##################################################
@@ -200,7 +212,7 @@ def run_review_service(
         if progress:
             progress(5, "규칙 계산으로 결과를 교차 검증하고 있습니다")
 
-        engine = evaluate(contract, criteria, facts)
+        engine = evaluate(contract, criteria, facts, source_codes=source_codes())
 
         if not engine["is_contract"]:
             review = None

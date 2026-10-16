@@ -8,7 +8,13 @@ import hashlib
 import json
 import os
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
 
 
 ##################################################
@@ -74,3 +80,26 @@ def file_sha256(file_path: Path) -> str:
             digest.update(chunk)
 
     return digest.hexdigest()
+
+
+##################################################
+# Lock
+##################################################
+
+@contextmanager
+def file_lock(path: Path):
+    """
+    같은 파일을 여러 요청이 동시에 만들지 않게 잠근다 (Linux·macOS).
+    Windows에서는 잠금 없이 진행한다. 로컬 실행은 한 사람만 쓰므로 충분하다.
+    """
+
+    ensure_directory(path)
+
+    with open(path, "w") as handle:
+        if fcntl is not None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(handle, fcntl.LOCK_UN)

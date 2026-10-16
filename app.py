@@ -19,6 +19,9 @@ import json
 import re
 from pathlib import Path
 
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
+
 from config import (
     CACHE_DIR,
     CONTRACT_JSON,
@@ -38,10 +41,11 @@ from agent_client import AgentError, find_classification
 from contract_agent import analyze_contract
 from criteria_agent import analyze_criteria
 from review_agent import analyze_review
-from file_manager import file_sha256, load_json, save_json
+from file_manager import file_lock, file_sha256, load_json, save_json
 from review_builder import build_review_input
 from rules import (
     LEVELS,
+    RULE_CODE_PATTERN,
     as_list,
     compute_facts,
     criteria_problems,
@@ -52,6 +56,10 @@ from rules import (
     text
 )
 from upload import upload_file
+
+
+# 평가 에이전트 결과 스키마 항목 (Review Agent 수정본)
+REVIEW_FIELDS = ("review_level", "summary", "matched_rules", "missing_items", "risky_clauses", "confirmed_items", "recommendations")
 
 
 class CriteriaError(AgentError):
@@ -88,6 +96,23 @@ def process_document(
     return result
 
 
+def criteria_source_codes(criteria_file: Path = CRITERIA_FILE) -> set[str] | None:
+    """
+    기준서 PDF 원문에서 규칙 코드를 직접 읽는다. 추출 결과에 빠진 규칙이 없는지 대조할 때 쓴다.
+    PDF에서 글자를 읽지 못하면 None(대조하지 않음)을 돌려준다.
+    """
+
+    try:
+        reader = PdfReader(str(criteria_file))
+        content = "\n".join(page.extract_text() or "" for page in reader.pages)
+    except (OSError, ValueError, PdfReadError):
+        return None
+
+    codes = set(RULE_CODE_PATTERN.findall(content))
+
+    return codes or None
+
+
 def load_or_extract_criteria(
     criteria_file: Path = CRITERIA_FILE,
     output_json: Path = CRITERIA_JSON
@@ -97,30 +122,35 @@ def load_or_extract_criteria(
 
     캐시 키에는 기준서 PDF 해시와 Criteria Agent ID·Config ID를 넣는다.
     기준서나 에이전트 설정을 바꾸면 다시 추출한다. 읽을 수 없거나 쓸 수 없는 캐시도 다시 추출한다.
+    같은 키의 첫 요청이 동시에 들어와도 추출은 한 번만 하도록 키별 잠금을 건다.
     """
 
     key = f"{file_sha256(criteria_file)[:16]}_{CRITERIA_AGENT_ID}_{CRITERIA_CONFIG_ID}"
     cache = CACHE_DIR / f"criteria_{re.sub(r'[^A-Za-z0-9_.-]', '_', key)}.json"
-    criteria = None
+    source_codes = criteria_source_codes(criteria_file)
 
-    if cache.exists():
+    def usable(path: Path) -> dict | None:
         try:
-            cached = load_json(cache)
-            if isinstance(cached, dict) and not criteria_problems(cached):
-                print(f"\nStep 2. Criteria Agent (캐시 사용: {cache.name})")
-                criteria = cached
+            cached = load_json(path)
         except (OSError, ValueError):
-            criteria = None
+            return None
+        return cached if isinstance(cached, dict) and not criteria_problems(cached, source_codes) else None
 
-    if criteria is None:
-        criteria = process_document("Step 2. Criteria Agent", criteria_file, analyze_criteria, output_json)
+    with file_lock(cache.with_suffix(".lock")):
 
-        problems = criteria_problems(criteria)
+        criteria = usable(cache) if cache.exists() else None
 
-        if problems:
-            raise CriteriaError("점검 기준서를 읽지 못했습니다: " + ", ".join(problems))
+        if criteria is not None:
+            print(f"\nStep 2. Criteria Agent (캐시 사용: {cache.name})")
+        else:
+            criteria = process_document("Step 2. Criteria Agent", criteria_file, analyze_criteria, output_json)
 
-        save_json(criteria, cache)
+            problems = criteria_problems(criteria, source_codes)
+
+            if problems:
+                raise CriteriaError("점검 기준서를 읽지 못했습니다: " + ", ".join(problems))
+
+            save_json(criteria, cache)
 
     save_json(criteria, output_json)
 
@@ -158,7 +188,11 @@ def normalize_review(review: dict, raw: dict) -> dict:
 
     분류는 결과 스키마의 review_level과 응답 원본의 Classify 결과를 모두 본다.
     둘이 다르면 더 엄격한 쪽을 쓰고 level_conflict로 알린다.
+    결과 스키마의 항목이 하나도 없으면(빈 결과) 평가가 끝난 것으로 보지 않고 오류를 낸다.
     """
+
+    if not any(key in review for key in REVIEW_FIELDS):
+        raise AgentError("평가 에이전트 결과에 결과 스키마 항목이 없습니다. Review Agent 설정을 확인해 주세요.")
 
     schema_level = normalize_level(review.get("review_level"))
     classify_level = find_classification(raw, LEVELS)

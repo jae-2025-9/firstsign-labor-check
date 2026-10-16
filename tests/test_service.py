@@ -86,6 +86,14 @@ def test_review_input_pdf_with_very_long_terms(tmp_path):
     assert path.read_bytes()[:5] == b"%PDF-"
 
 
+def test_review_input_pdf_with_many_short_lines(tmp_path):
+    contract = json.loads((FIXTURES / "contract_sample3.json").read_text(encoding="utf-8"))
+    criteria = json.loads((FIXTURES / "criteria.json").read_text(encoding="utf-8"))
+    contract["special_terms"] = ["조항\n" * 60]
+    path = build_review_input(contract, criteria, compute_facts(contract, criteria), tmp_path / "lines.pdf")
+    assert path.read_bytes()[:5] == b"%PDF-"
+
+
 def test_review_input_pdf(tmp_path):
     contract = json.loads((FIXTURES / "contract_sample3.json").read_text(encoding="utf-8"))
     criteria = json.loads((FIXTURES / "criteria.json").read_text(encoding="utf-8"))

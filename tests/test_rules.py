@@ -40,7 +40,8 @@ def criteria():
 EXPECTED = {
     "1": ("safe", set()),
     "2": ("check_needed", {"LABOR_REQUIRED_TERMS", "LABOR_BREAK", "LABOR_WEEKLY_HOLIDAY", "LABOR_SIGN_COPY", "LABOR_MIN_WAGE_NEXT"}),  # 주 5일 × 6시간
-    "3": ("risky", {"LABOR_MIN_WAGE", "LABOR_PENALTY", "LABOR_BREAK", "LABOR_WEEKLY_HOLIDAY", "LABOR_SIGN_COPY", "LABOR_MIN_WAGE_NEXT"}),
+    # 주 15시간인데 "주휴일 없음", 연차는 "협의한다"(정해지지 않음)라 필수 기재사항도 해당
+    "3": ("risky", {"LABOR_MIN_WAGE", "LABOR_PENALTY", "LABOR_REQUIRED_TERMS", "LABOR_BREAK", "LABOR_WEEKLY_HOLIDAY", "LABOR_SIGN_COPY", "LABOR_MIN_WAGE_NEXT"}),
     "4": ("safe", set()),
 }
 
@@ -381,7 +382,9 @@ def test_final_view_upgrades_and_stays_consistent(criteria):
     check = cross_check("safe", review["matched_rules"], engine)
     final = final_view(review, engine, "safe", check)
     assert final["level"] == "risky"
-    assert "올렸습니다" in final["summary"]
+    assert "평가 에이전트는 '안심'" in final["summary"]
+    assert "모든 규칙을 충족합니다" not in final["summary"]
+    assert final["agent_summary"] == "모든 규칙을 충족합니다."
     assert "불리한 특약 없음" not in final["confirmed_items"]
     assert any("삭제" in action for action in final["recommendations"])
     assert {c["rule_code"] for c in final["cards"]} == set(engine["hit_codes"])
@@ -423,3 +426,158 @@ def test_requests_only_from_agent(criteria):
     review = agent_review(review_level="risky", recommendations=["사장님, 위약금 조항을 빼 주실 수 있을까요?"])
     live = final_view(review, engine, "risky", cross_check("risky", review["matched_rules"], engine))
     assert live["requests"] == ["사장님, 위약금 조항을 빼 주실 수 있을까요?"]
+
+
+
+##################################################
+# Codex 검수 2차 회귀 테스트
+##################################################
+
+def with_condition(criteria, code, transform):
+    changed = copy.deepcopy(criteria)
+    for rule in changed["check_rules"]:
+        if rule["rule_code"] == code:
+            rule["check_condition"] = transform(rule["check_condition"])
+    return changed
+
+
+@pytest.mark.parametrize("code,old,new", [
+    ("LABOR_WEEKLY_HOLIDAY", "15시간 이상인데", "15시간 초과인데"),
+    ("LABOR_MIN_WAGE", "최저임금보다 낮다", "최저임금보다 높다"),
+    ("LABOR_SIGN_COPY", "없거나", "없고"),
+    ("LABOR_MIN_WAGE_NEXT", "2027년 1월 1일", "2027년 7월 1일"),
+    ("LABOR_BREAK", "휴게 30분 이상, 8시간 이상이면 휴게 1시간", "휴게 1분 이상, 8시간 이상이면 휴게 30시간"),
+])
+def test_meaning_changes_are_undetermined(code, old, new, criteria):
+    changed = with_condition(criteria, code, lambda c: c.replace(old, new))
+    assert code in evaluate(load("contract_sample3.json"), changed)["undetermined_codes"]
+
+
+def test_next_year_criteria_with_new_amounts_is_supported(criteria):
+    next_year = copy.deepcopy(criteria)
+    rule = next(r for r in next_year["check_rules"] if r["rule_code"] == "LABOR_MIN_WAGE")
+    rule["check_condition"] = rule["check_condition"].replace("10,320", "10,500")
+    next_year["min_wage_hourly"] = [10500]
+    result = evaluate(load("contract_sample1.json"), next_year)
+    assert "LABOR_MIN_WAGE" not in result["undetermined_codes"]
+
+
+def test_final_level_never_below_confirmed_card(criteria):
+    from rules import final_view
+    contract = load("contract_sample1.json")
+    contract.update(special_terms=["퇴사시 마지막 임금을 지급한다."], is_signed=[False])
+    engine = evaluate(contract, criteria)
+    assert engine["level"] is None and engine["min_level"] == "check_needed"
+    review = agent_review()
+    final = final_view(review, engine, "safe", cross_check("safe", [], engine))
+    assert final["level"] == "check_needed"
+    assert final["incomplete"] is False
+
+
+def test_agent_level_lower_than_its_own_rules(criteria):
+    from rules import final_view
+    engine = evaluate(load("contract_sample1.json"), criteria)
+    review = agent_review(matched_rules=["LABOR_PENALTY - 근로기준법 제20조"])
+    final = final_view(review, engine, "safe", cross_check("safe", review["matched_rules"], engine))
+    assert final["level"] == "risky"
+    assert final["disagree"] is True
+
+
+def test_no_agent_and_pending_is_incomplete(criteria):
+    from rules import final_view
+    contract = load("contract_sample1.json")
+    contract.update(special_terms=["퇴사시 마지막 임금을 지급한다."], is_signed=[False])
+    engine = evaluate(contract, criteria)
+    final = final_view(engine_review(engine), engine, None, cross_check(None, [], engine))
+    assert final["level"] == "check_needed"
+    assert final["incomplete"] is True
+    assert "최소 '확인 필요'" in final["summary"]
+
+
+def test_missing_rule_row_is_a_criteria_problem(criteria):
+    from rules import criteria_problems
+    trimmed = copy.deepcopy(criteria)
+    trimmed["check_rules"] = [r for r in trimmed["check_rules"] if r["rule_code"] != "LABOR_MIN_WAGE"]
+    codes = {r["rule_code"] for r in criteria["check_rules"]}
+    assert any("빠진 규칙" in p for p in criteria_problems(trimmed, codes))
+    contract = load("contract_sample1.json")
+    contract.update(wage_amount=[9500], contract_end_date=["2026-12-31"])
+    assert evaluate(contract, trimmed, source_codes=codes)["level"] is None
+
+
+def test_duplicate_rule_codes_are_a_problem(criteria):
+    from rules import criteria_problems
+    doubled = copy.deepcopy(criteria)
+    doubled["check_rules"].append(dict(doubled["check_rules"][0]))
+    assert any("중복" in p for p in criteria_problems(doubled))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("annual_leave_clause", "해당 없음"),
+    ("annual_leave_clause", "없음"),
+    ("wage_payment_method", "미정"),
+    ("job_description", "추후 결정"),
+])
+def test_absent_or_undecided_values_are_missing(field, value, criteria):
+    contract = load("contract_sample1.json")
+    contract[field] = [value]
+    assert "LABOR_REQUIRED_TERMS" in evaluate(contract, criteria)["hit_codes"]
+
+
+def test_not_applicable_needs_weekly_hours(criteria):
+    contract = load("contract_sample4.json")
+    contract["work_days"] = [""]
+    assert "LABOR_REQUIRED_TERMS" in evaluate(contract, criteria)["undetermined_codes"]
+
+
+@pytest.mark.parametrize("start,break_text,hit", [
+    ("2026-12-10", "휴게 없음 (근로자가 명시적으로 휴게 미사용을 요청함)", False),
+    ("2026-11-01", "휴게 없음 (근로자가 명시적으로 휴게 미사용을 요청함)", True),
+    ("2026-12-10", "없음", True),
+])
+def test_four_hour_break_exception(start, break_text, hit, criteria):
+    contract = load("contract_sample1.json")
+    contract.update(contract_start_date=[start], work_start_time=["09:00"], work_end_time=["13:00"], break_time=[break_text])
+    finding = next(f for f in evaluate(contract, criteria)["findings"] if f["rule_code"] == "LABOR_BREAK")
+    assert finding["hit"] is hit
+
+
+def test_employer_paying_damages_is_not_a_penalty(criteria):
+    contract = load("contract_sample1.json")
+    contract["special_terms"] = ["회사가 근로자에게 손해배상금을 지급한다."]
+    assert "LABOR_PENALTY" not in evaluate(contract, criteria)["hit_codes"]
+
+
+@pytest.mark.parametrize("clause", ["계약서를 근로자에게 교부할 의무는 없다.", "계약서를 근로자에게 교부는 하지 않는다."])
+def test_copy_negations(clause, criteria):
+    contract = load("contract_sample1.json")
+    contract["copy_delivery_clause"] = [clause]
+    assert "LABOR_SIGN_COPY" in evaluate(contract, criteria)["hit_codes"]
+
+
+def test_break_longer_than_shift_is_not_computed(criteria):
+    contract = load("contract_sample1.json")
+    contract.update(work_start_time=["09:00"], work_end_time=["10:00"], break_time=["2시간"])
+    facts = compute_facts(contract, criteria)
+    assert facts["daily_work_hours"] is None
+    assert any("휴게시간이" in note for note in facts["notes"])
+
+
+def test_multiple_shift_times_are_not_merged(criteria):
+    contract = load("contract_sample1.json")
+    contract.update(work_start_time=["09:00", "18:00"], work_end_time=["13:00", "22:00"], break_time=["없음"])
+    assert compute_facts(contract, criteria)["daily_work_hours"] is None
+
+
+def test_summary_drops_mismatched_next_year():
+    from rules import summarize_criteria
+    later = load("criteria.json")
+    later["criteria_version"] = ["v3.0 (법령 기준일 2027-10-01)"]
+    summary = summarize_criteria(later)
+    assert summary["min_wage_next"] is None and summary["min_wage_next_dropped"] is True
+
+
+def test_line_wrap_inside_numbers_is_tolerated(criteria):
+    # PDF 표 셀의 줄바꿈("2026\n년", "1\n5시간")은 공백으로 보고 지운다. 숫자를 바꾸는 보정은 하지 않는다.
+    wrapped = with_condition(criteria, "LABOR_REQUIRED_TERMS", lambda c: c.replace("15시간 미만", "1\n5시간 미만"))
+    assert "LABOR_REQUIRED_TERMS" not in evaluate(load("contract_sample1.json"), wrapped)["undetermined_codes"]

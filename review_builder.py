@@ -93,8 +93,10 @@ CONTRACT_LABELS = [
 
 EMPTY = "(비어 있음)"
 
-# 이보다 긴 값은 표 밖 문단으로 적는다
+# 이보다 길거나 줄이 많은 값은 표 밖 문단으로 적는다. 특약은 길이와 상관없이 항상 표 밖에 적는다.
 LONG_VALUE_CHARS = 300
+LONG_VALUE_LINES = 6
+ALWAYS_OUTSIDE = {"special_terms"}
 
 
 ##################################################
@@ -150,9 +152,11 @@ def add_contract(story: list, contract: dict):
 
         value = contract_value(contract, key)
 
-        if len(value) > LONG_VALUE_CHARS:
+        outside = key in ALWAYS_OUTSIDE and value not in ("없음", EMPTY)
+
+        if outside or len(value) > LONG_VALUE_CHARS or value.count("\n") >= LONG_VALUE_LINES:
             long_values.append((label, value))
-            value = "(길어서 표 아래 '긴 항목 원문'에 적음)"
+            value = "(표 아래 '긴 항목 원문'에 적음)"
 
         rows.append([p(label, CELL_STYLE), p(value, CELL_STYLE)])
 
@@ -172,7 +176,8 @@ def add_contract(story: list, contract: dict):
         for label, value in long_values:
             story.append(p(f"{label}:"))
             for chunk in value.split(" / "):
-                story.append(p(chunk))
+                for line in chunk.split("\n"):
+                    story.append(p(line))
             story.append(Spacer(1, 0.2 * cm))
 
 
@@ -188,7 +193,7 @@ def add_criteria(story: list, criteria: dict):
         f"적용 버전: {summary['version'] or EMPTY}",
         f"필수 기재사항: {', '.join(summary['required_items']) or EMPTY}",
         f"최저임금({year or '기준'}년, 시간급): {won(summary['min_wage_current'])}",
-        f"최저임금({year + 1 if year else '다음'}년, 시간급): {won(summary['min_wage_next'])}",
+        f"최저임금({summary['min_wage_next_year'] or '다음 해'}년, 시간급): {won(summary['min_wage_next']) if summary['min_wage_next'] is not None else '확정하지 못함'}",
         f"인용 법령: {', '.join(summary['legal_basis']) or EMPTY}",
     ]
 
