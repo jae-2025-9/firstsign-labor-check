@@ -392,16 +392,86 @@ def test_final_view_upgrades_and_stays_consistent(criteria):
 
 
 def test_final_view_shows_agent_only_rule(criteria):
+    # 문장 해석이 필요한 규칙은 규칙 계산이 통과로 봐도 에이전트 지적을 카드로 남긴다
+    from rules import final_view
+    engine = evaluate(load("contract_sample1.json"), criteria)
+    review = agent_review(review_level="check_needed", matched_rules=["LABOR_REQUIRED_TERMS - 근로기준법 제17조"],
+                          recommendations=["업무 내용을 구체적으로 적어 주세요."])
+    check = cross_check("check_needed", review["matched_rules"], engine)
+    final = final_view(review, engine, "check_needed", check)
+    assert final["level"] == "check_needed"
+    card = next(c for c in final["cards"] if c["rule_code"] == "LABOR_REQUIRED_TERMS")
+    assert card["source"] == "agent"
+    assert "평가 에이전트가" in card["reason"]
+    assert final["disputed"] == []
+
+
+def test_agent_flag_on_decisive_pass_is_disputed(criteria):
+    # 계약서 숫자로 통과가 확인된 규칙(휴게시간)을 에이전트가 지적하면 등급에 넣지 않고 의견 차이로 둔다
     from rules import final_view
     engine = evaluate(load("contract_sample1.json"), criteria)
     review = agent_review(review_level="check_needed", matched_rules=["LABOR_BREAK - 근로기준법 제54조"],
                           recommendations=["휴게시간을 적어 주세요."])
     check = cross_check("check_needed", review["matched_rules"], engine)
     final = final_view(review, engine, "check_needed", check)
+    assert final["cards"] == []
+    assert [d["rule_code"] for d in final["disputed"]] == ["LABOR_BREAK"]
+    assert final["level"] == "safe"
+    assert final["requests"] == [] and final["recommendations"] == []
+    assert "등급에 넣지 않았습니다" in final["summary"]
+    assert check["status"] == "mismatch" and final["disagree"]
+
+
+def test_agent_level_capped_by_criteria_category(criteria):
+    # 에이전트가 '위험'이라 해도 근거 규칙이 모두 기준서상 '확인 필요'면 '확인 필요'로 표시한다
+    from rules import final_view
+    engine = evaluate(load("contract_sample2.json"), criteria)
+    codes = [f"{code} - 근거" for code in engine["hit_codes"]]
+    review = agent_review(review_level="risky", matched_rules=codes)
+    final = final_view(review, engine, "risky", cross_check("risky", codes, engine))
+    assert {c["level"] for c in final["cards"]} == {"check_needed"}
     assert final["level"] == "check_needed"
-    card = next(c for c in final["cards"] if c["rule_code"] == "LABOR_BREAK")
-    assert card["source"] == "agent"
-    assert "평가 에이전트가" in card["reason"]
+    assert "기준서 분류에 맞춰" in final["summary"]
+
+
+def test_agent_warning_without_rule_codes_is_check_needed(criteria):
+    # 기준서 규칙 코드 없이 경고만 하면 근거가 없으므로 '확인 필요'까지만 올린다
+    from rules import final_view
+    engine = evaluate(load("contract_sample1.json"), criteria)
+    review = agent_review(review_level="risky", matched_rules=["기타 - 사장님 태도"])
+    final = final_view(review, engine, "risky", cross_check("risky", review["matched_rules"], engine))
+    assert final["cards"] == [] and final["level"] == "check_needed"
+    assert "근거를 찾지 못해" in final["summary"]
+
+
+def test_source_conditions_repair_truncated_condition(criteria):
+    from rules import KNOWN_CONDITIONS, apply_source_conditions, condition_supported, criteria_rules
+    truncated = copy.deepcopy(criteria)
+    for row in truncated["check_rules"]:
+        if row["rule_code"] == "LABOR_MIN_WAGE_NEXT":
+            row["check_condition"] = "계약기간이 2027년 1월 1일 이후까지 이어지는데 시급이 2027년 최저임금 10,700원 미만이다. 종료"
+    rule = next(r for r in criteria_rules(truncated) if r["rule_code"] == "LABOR_MIN_WAGE_NEXT")
+    assert condition_supported(rule, 2026)[0] is False
+
+    source = {"LABOR_MIN_WAGE_NEXT": KNOWN_CONDITIONS["LABOR_MIN_WAGE_NEXT"][0]}
+    fixed, repaired = apply_source_conditions(truncated, source)
+    assert repaired == ["LABOR_MIN_WAGE_NEXT"]
+    rule = next(r for r in criteria_rules(fixed) if r["rule_code"] == "LABOR_MIN_WAGE_NEXT")
+    assert condition_supported(rule, 2026)[0] is True
+    assert truncated["check_rules"] is not fixed["check_rules"]  # 원본은 그대로
+
+    same, none = apply_source_conditions(fixed, source)
+    assert none == [] and same is fixed
+    assert apply_source_conditions(truncated, {}) == (truncated, [])
+
+
+def test_source_conditions_read_from_pdf():
+    from app import criteria_source_conditions
+    from rules import KNOWN_CONDITIONS, condition_shape
+    conditions = criteria_source_conditions()
+    assert set(conditions) == set(KNOWN_CONDITIONS)
+    for code, sentence in conditions.items():
+        assert condition_shape(sentence) == condition_shape(KNOWN_CONDITIONS[code][0]), code
 
 
 def test_final_view_agent_flags_new_rule(criteria):

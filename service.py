@@ -34,10 +34,11 @@ from config import (
     is_live_ready
 )
 from agent_client import AgentError
-from app import CriteriaError, criteria_source_codes, normalize_review, run_workflow
+from app import CriteriaError, criteria_source_codes, normalize_review, run_workflow, source_conditions
 from file_manager import file_sha256, load_json
 from review_builder import build_review_input, contract_rows
 from rules import (
+    apply_source_conditions,
     compute_facts,
     cross_check,
     engine_review,
@@ -204,9 +205,11 @@ def run_review_service(
             result = run_workflow(contract_file, run_dir=run_dir, progress=progress)
             contract, criteria, facts = result["contract"], result["criteria"], result["facts"]
             review_json, raw = result["review"], result["review_raw"] or {}
+            repaired = result.get("criteria_repaired", [])
 
         else:
             contract, criteria, review_json, raw, source = demo_inputs(sample_id)
+            criteria, repaired = apply_source_conditions(criteria, source_conditions(CRITERIA_FILE))
             mode = "demo"
             facts = compute_facts(contract, criteria)
 
@@ -244,6 +247,8 @@ def run_review_service(
             "contract": contract,
             "contract_rows": contract_rows(contract),
             "criteria": criteria,
+            # 기준서 PDF 원문과 대조해 점검 조건을 바로잡은 규칙 코드
+            "criteria_repaired": repaired,
             "facts": facts,
             "engine": engine,
             "review": review,

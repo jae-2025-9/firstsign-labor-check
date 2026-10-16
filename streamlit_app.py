@@ -352,7 +352,10 @@ def render_cross_check(result: dict):
     if check["engine_only"]:
         lines.append("규칙 계산만 지적: " + ", ".join(esc(RULE_TITLES.get(c, c)) for c in check["engine_only"]))
 
-    lines.append("사용자 보호를 위해 둘 중 더 엄격한 등급과 두 쪽의 지적을 모두 표시합니다. 해당 항목은 계약서 원문으로 직접 확인하세요.")
+    lines.append("최종 등급은 지적한 규칙의 기준서 분류로 정했고, 두 쪽의 지적을 아래에 모두 표시합니다.")
+
+    if result["final"]["disputed"]:
+        lines.append("계약서 값으로 계산해 해당하지 않음을 확인한 에이전트 지적은 아래 '의견 차이'에 따로 적었습니다.")
 
     html_block('<div class="fs-box amber"><b>교차 검증 결과가 다릅니다</b>' + "<br>".join(lines) + "</div>")
 
@@ -417,6 +420,10 @@ def render_rules(result: dict):
         names = "<br>".join(f"{esc(f['title'])}: {esc(f['reason'])}" for f in final["pending"])
         html_block(f'<div class="fs-box slate"><b>판단 보류 ({len(final["pending"])}건)</b>{names}</div>')
 
+    if final["disputed"]:
+        names = "<br>".join(f"{esc(f['title'])}: {esc(f['reason'])}" for f in final["disputed"])
+        html_block(f'<div class="fs-box slate"><b>의견 차이 ({len(final["disputed"])}건) · 등급에 넣지 않음</b>{names}</div>')
+
     clauses = result["review"]["risky_clauses"]
 
     if clauses and result["source"] != "rules":
@@ -476,6 +483,12 @@ def render_details(result: dict):
         )
         for note in facts["notes"] + result["engine"]["criteria_problems"]:
             st.caption(f"참고: {note}")
+        if result.get("criteria_repaired"):
+            st.caption(
+                "기준서 원문 대조: Criteria Agent가 읽은 "
+                + ", ".join(result["criteria_repaired"])
+                + " 점검 조건이 PDF 원문과 달라 원문 문장으로 바로잡았습니다."
+            )
 
     final = result["final"]
 
@@ -494,8 +507,10 @@ def render_details(result: dict):
         "final_level": result["final_level"],
         "agent_level": result["agent_level"],
         "engine_level": result["engine_level"],
-        "final": {k: v for k, v in (final or {}).items() if k not in ("cards", "pending")},
+        "final": {k: v for k, v in (final or {}).items() if k not in ("cards", "pending", "disputed")},
         "final_rule_codes": [card["rule_code"] for card in final["cards"]] if final else [],
+        "disputed_rule_codes": [card["rule_code"] for card in final["disputed"]] if final else [],
+        "criteria_repaired": result.get("criteria_repaired", []),
         "review": result["review"],
         "contract": result["contract"],
         "facts": facts,

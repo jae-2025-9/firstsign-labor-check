@@ -17,6 +17,7 @@ app.py
 import argparse
 import json
 import re
+from functools import lru_cache
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -46,6 +47,7 @@ from review_builder import build_review_input
 from rules import (
     LEVELS,
     RULE_CODE_PATTERN,
+    apply_source_conditions,
     as_list,
     compute_facts,
     criteria_problems,
@@ -112,6 +114,71 @@ def criteria_source_codes(criteria_file: Path = CRITERIA_FILE) -> set[str] | Non
     codes = set(RULE_CODE_PATTERN.findall(content))
 
     return codes or None
+
+
+def criteria_source_conditions(criteria_file: Path = CRITERIA_FILE) -> dict[str, str]:
+    """
+    기준서 PDF 원문의 규칙 표에서 규칙별 점검 조건 칸을 글자 위치로 읽는다.
+
+    표를 줄 단위로 꺼내면 옆 칸 글자가 섞이고, 페이지를 넘는 칸은 끝이 잘려
+    Criteria Agent도 조건을 잘못 읽을 수 있다. 머리글 '규칙 코드'·'점검 조건'과
+    그 오른쪽 칸의 가로 위치로 점검 조건 칸 글자만 모은다.
+    표를 찾지 못하면 빈 dict(바로잡지 않음)를 돌려준다.
+    """
+
+    pieces: list[tuple[float, str]] = []
+
+    def visit(text_, cm, tm, font, size):
+        if text_.strip():
+            pieces.append((tm[4] * cm[0] + tm[5] * cm[2] + cm[4], text_.strip()))
+
+    try:
+        for page in PdfReader(str(criteria_file)).pages:
+            page.extract_text(visitor_text=visit)
+    except (OSError, ValueError, KeyError, TypeError, PdfReadError):
+        return {}
+
+    header = next((i for i, (_, t) in enumerate(pieces) if t.startswith("규칙 코드")), None)
+    first_code = next((i for i in range(header + 1, len(pieces)) if RULE_CODE_PATTERN.fullmatch(pieces[i][1])), None) if header is not None else None
+
+    if first_code is None:
+        return {}
+
+    head = pieces[header:first_code]
+    code_x = pieces[header][0]
+    condition_x = next((x for x, t in head if "점검 조건" in t), None)
+
+    if condition_x is None:
+        return {}
+
+    next_x = min((x for x, _ in head if x > condition_x + 1), default=float("inf"))
+    conditions: dict[str, list[str]] = {}
+    current = None
+
+    for x, t in pieces[first_code:]:
+        if abs(x - code_x) < 2 and RULE_CODE_PATTERN.fullmatch(t):
+            current = t
+            conditions[current] = []
+        elif x < condition_x - 2:
+            break  # 규칙 칸보다 왼쪽에서 다른 글이 시작되면 표가 끝난 것
+        elif x < next_x - 2 and current:
+            conditions[current].append(t)
+
+    return {code: " ".join(parts) for code, parts in conditions.items() if parts}
+
+
+@lru_cache(maxsize=4)
+def source_conditions_for(path: str, digest: str) -> dict[str, str]:
+
+    return criteria_source_conditions(Path(path))
+
+
+def source_conditions(criteria_file: Path = CRITERIA_FILE) -> dict[str, str]:
+    """
+    기준서 원문의 점검 조건. PDF 내용 해시로 캐시해 기준서를 바꾸면 다시 읽는다.
+    """
+
+    return source_conditions_for(str(criteria_file), file_sha256(criteria_file))
 
 
 def load_or_extract_criteria(
@@ -266,12 +333,18 @@ def run_workflow(
     contract = process_document("Step 1. Contract Agent", Path(contract_file), analyze_contract, paths["contract"])
 
     report(2, "점검 기준서를 불러오고 있습니다 (Criteria Agent)")
-    criteria = load_or_extract_criteria(CRITERIA_FILE, paths["criteria"])
+    extracted = load_or_extract_criteria(CRITERIA_FILE, paths["criteria"])
+    criteria, repaired = apply_source_conditions(extracted, source_conditions(CRITERIA_FILE))
+
+    if repaired:
+        print(f"기준서 원문 대조: {', '.join(repaired)} 점검 조건을 PDF 원문 문장으로 바로잡았습니다.")
 
     if not looks_like_contract(contract):
         return {
             "contract": contract,
             "criteria": criteria,
+            "criteria_extracted": extracted,
+            "criteria_repaired": repaired,
             "facts": compute_facts(contract, criteria),
             "review": None,
             "review_raw": None,
@@ -287,6 +360,8 @@ def run_workflow(
     return {
         "contract": contract,
         "criteria": criteria,
+        "criteria_extracted": extracted,
+        "criteria_repaired": repaired,
         "facts": facts,
         "review": review,
         "review_raw": raw,
@@ -303,7 +378,8 @@ def save_fixture(sample_id: str, result: dict):
     live = FIXTURE_DIR / "live"
 
     save_json(result["contract"], live / f"contract_sample{sample_id}.json")
-    save_json(result["criteria"], live / "criteria.json")
+    # 원문 대조 전 추출 결과를 저장한다. 데모에서도 같은 대조 과정을 거쳐 보여 주기 위해서다.
+    save_json(result.get("criteria_extracted", result["criteria"]), live / "criteria.json")
 
     if result["review"] is not None:
         save_json(result["review"], live / f"review_sample{sample_id}.json")

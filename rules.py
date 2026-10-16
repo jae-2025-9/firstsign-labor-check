@@ -97,6 +97,11 @@ KNOWN_CONDITIONS = {
 # KNOWN_CONDITIONS 문장이 쓰인 기준 연도
 KNOWN_BASE_YEAR = 2026
 
+# 통과 판정이 계약서 숫자·서명 값으로 정해지는 규칙. 규칙 계산이 통과로 확인했는데 평가 에이전트가
+# 해당한다고 하면 등급에 넣지 않고 '의견 차이'로 따로 보여 준다.
+# 위약금·필수 기재사항은 문장 해석이 필요해 에이전트 지적을 그대로 등급에 넣는다(놓치는 쪽이 더 해롭다).
+DECISIVE_PASS_RULES = {"LABOR_MIN_WAGE", "LABOR_MIN_WAGE_NEXT", "LABOR_BREAK", "LABOR_WEEKLY_HOLIDAY", "LABOR_SIGN_COPY"}
+
 # 2026-12-10 시행 근로기준법 제54조 개정: 정확히 4시간 근무에 근로자가 명시적으로 요청하면 휴게 없이 가능
 BREAK_EXCEPTION_START = date(2026, 12, 10)
 
@@ -599,6 +604,38 @@ def criteria_problems(criteria: dict, source_codes: set[str] | None = None) -> l
         problems.append("기준서의 기준 연도를 읽지 못했습니다")
 
     return problems
+
+
+def apply_source_conditions(criteria: dict, source_conditions: dict[str, str] | None) -> tuple[dict, list[str]]:
+    """
+    기준서 PDF 원문에서 읽은 점검 조건으로 추출 결과의 조건 문장을 바로잡는다.
+
+    표 칸이 페이지를 넘어가면 Criteria Agent가 조건 문장 끝을 놓칠 수 있다("…미만이다. 종료").
+    공백·문장부호를 지운 모양이 원문과 다른 규칙만 원문 문장으로 바꾸고, 바꾼 규칙 코드를 돌려준다.
+    원문을 읽지 못했으면 그대로 둔다.
+    """
+
+    if not source_conditions:
+        return criteria, []
+
+    rows, repaired = [], []
+
+    for row in criteria_rows(criteria):
+
+        row = dict(row)
+        code = str(first(row.get("rule_code"), "")).strip()
+        source = source_conditions.get(code)
+
+        if source and condition_shape(source) != condition_shape(text(row.get("check_condition"))):
+            row["check_condition"] = source
+            repaired.append(code)
+
+        rows.append(row)
+
+    if not repaired:
+        return criteria, []
+
+    return {**criteria, "check_rules": rows}, repaired
 
 
 ##################################################
@@ -1350,7 +1387,14 @@ def cross_check(agent_level: str | None, agent_rules, engine: dict) -> dict:
 # 규칙 계산 결과를 평가 결과 모양으로
 ##################################################
 
-def compose_summary(engine: dict, hits: list[dict], level: str | None, incomplete: bool, agent_level: str | None = None) -> str:
+def compose_summary(
+    engine: dict,
+    hits: list[dict],
+    level: str | None,
+    incomplete: bool,
+    agent_level: str | None = None,
+    disputed: list[dict] | None = None
+) -> str:
     """
     최종 판정으로 요약을 다시 쓴다. 첫 문장은 시급과 적용 최저임금 비교다.
     """
@@ -1373,8 +1417,24 @@ def compose_summary(engine: dict, hits: list[dict], level: str | None, incomplet
     if incomplete:
         sentences.append("판단하지 못한 규칙이 있어 등급을 확정하지 않았습니다." if level is None else f"판단하지 못한 규칙이 있어 최소 '{LEVEL_LABELS[level]}'입니다.")
 
+    if disputed:
+        sentences.append(
+            "평가 에이전트가 지적한 " + ", ".join(f["title"] for f in disputed)
+            + " 항목은 계약서 값으로 계산하면 해당하지 않아 등급에 넣지 않았습니다."
+        )
+
     if agent_level is not None and level is not None and agent_level != level:
-        sentences.append(f"평가 에이전트는 '{LEVEL_LABELS[agent_level]}'(으)로 판단했지만, 확정된 지적에 맞춰 '{LEVEL_LABELS[level]}'(으)로 표시합니다.")
+        if LEVEL_SEVERITY[agent_level] < LEVEL_SEVERITY[level]:
+            basis = "해당 규칙의 기준서 분류에 맞춰"
+        elif hits:
+            basis = "근거 규칙의 기준서 분류에 맞춰"
+        elif disputed:
+            basis = "근거로 든 규칙이 계약서 값으로 해당하지 않아"
+        else:
+            basis = "기준서 규칙에서 근거를 찾지 못해"
+        sentences.append(f"평가 에이전트는 '{LEVEL_LABELS[agent_level]}'(으)로 판단했지만, {basis} '{LEVEL_LABELS[level]}'(으)로 표시합니다.")
+    elif agent_level is not None and level not in (None, "safe") and not hits:
+        sentences.append("해당한다고 확정한 규칙은 없지만 평가 에이전트가 확인이 필요하다고 판단했습니다.")
 
     return " ".join(sentences)
 
@@ -1414,29 +1474,47 @@ def final_view(review: dict, engine: dict, agent_level: str | None, check: dict)
     """
     평가 에이전트 결과와 규칙 계산을 합쳐 화면에 보여 줄 최종 결과를 만든다.
 
-    - 지적 규칙(카드): 규칙 계산이 해당한다고 본 규칙 + 에이전트가 해당한다고 본 규칙
-    - 등급: 에이전트 등급, 규칙 계산 등급, 카드들의 기준서 분류 중 가장 엄격한 것.
-      확정된 지적보다 낮은 등급은 나오지 않는다.
+    - 지적 규칙(카드): 규칙 계산이 해당한다고 본 규칙 + 에이전트가 해당한다고 본 규칙.
+      단 규칙 계산이 계약서 숫자·서명 값으로 통과를 확인한 규칙(DECISIVE_PASS_RULES)은
+      에이전트가 지적해도 카드에 넣지 않고 '의견 차이'(disputed)로 따로 둔다.
+    - 등급: 기준서가 정한다. 카드들의 기준서 분류 중 가장 엄격한 것이다.
+      에이전트가 분류했으면 규칙 계산이 판단하지 못한 규칙은 에이전트 판단을 따르고
+      (지적했으면 카드, 아니면 해당 없음), 근거 규칙 없이 더 엄격하게 분류했으면 '확인 필요'까지만 올린다.
+      에이전트 분류가 없으면 규칙 계산 전체 판정을 쓰고, 그것도 없으면 확정된 지적의 최소 등급만 낸다.
+      어느 경우든 확정된 지적보다 낮은 등급은 나오지 않는다.
     - incomplete: 등급을 확정할 판단(에이전트 분류 또는 규칙 계산 전체 판정)이 없음.
       교차 검증이 끝까지 됐는지는 check["status"]가 따로 알려 준다.
     - 요약: 항상 최종 구조화 결과로 다시 쓴다. 에이전트가 쓴 요약은 agent_summary로 따로 둔다.
     """
 
-    final_codes = set(engine["hit_codes"]) | set(check["agent_codes"])
-    cards = []
+    agent_codes = set(check["agent_codes"])
+    disputed_codes = {
+        f["rule_code"] for f in engine["findings"]
+        if f["rule_code"] in agent_codes and f["hit"] is False and f["rule_code"] in DECISIVE_PASS_RULES
+    }
+    final_codes = (set(engine["hit_codes"]) | agent_codes) - disputed_codes
+    cards, disputed = [], []
 
     for f in engine["findings"]:
+
+        if f["rule_code"] in disputed_codes:
+            disputed.append({
+                **f,
+                "source": "agent",
+                "reason": f"평가 에이전트는 해당한다고 봤지만, 계약서 값으로 계산하면 해당하지 않습니다. {f['reason']}",
+            })
+            continue
 
         if f["rule_code"] not in final_codes:
             continue
 
         card = dict(f)
 
-        if f["rule_code"] in check["agent_codes"] and not f["hit"]:
+        if f["rule_code"] in agent_codes and not f["hit"]:
             card["source"] = "agent"
             engine_note = "규칙 계산으로는 판단하지 못했습니다." if f["hit"] is None else f"규칙 계산에서는 통과로 나왔습니다({f['reason']})."
             card["reason"] = f"평가 에이전트가 이 규칙에 해당한다고 판단했습니다. {engine_note}"
-        elif f["rule_code"] not in check["agent_codes"] and agent_level is not None:
+        elif f["rule_code"] not in agent_codes and agent_level is not None:
             card["source"] = "engine"
         else:
             card["source"] = "both" if agent_level is not None else "engine"
@@ -1445,19 +1523,29 @@ def final_view(review: dict, engine: dict, agent_level: str | None, check: dict)
 
     cards.sort(key=lambda c: -LEVEL_SEVERITY.get(c["level"], 3))
 
-    card_levels = [c["level"] for c in cards if c["level"] in LEVEL_SEVERITY]
-    complete_level = agent_level if agent_level is not None else engine["level"]
+    card_level = more_severe(*(c["level"] for c in cards if c["level"] in LEVEL_SEVERITY))
 
-    if complete_level is None:
-        # 등급을 확정할 판단이 없다. 확정된 지적이 있으면 그 최소 등급만 보여 주고 보류를 알린다.
-        level = more_severe(*card_levels)
+    if agent_level is not None:
+        level = card_level or "safe"
+        if level == "safe" and agent_level != "safe" and not disputed:
+            # 기준서 규칙으로 근거를 대지 못한 경고는 직접 확인하도록 '확인 필요'까지만 반영한다.
+            # 근거로 든 규칙이 모두 계약서 값으로 해당하지 않으면(disputed) 경고의 근거가 없다.
+            level = "check_needed"
+        incomplete = False
+    elif engine["level"] is not None:
+        level = more_severe(engine["level"], card_level)
+        incomplete = False
     else:
-        level = more_severe(complete_level, engine["level"], *card_levels)
+        # 등급을 확정할 판단이 없다. 확정된 지적이 있으면 그 최소 등급만 보여 주고 보류를 알린다.
+        level = card_level
+        incomplete = True
 
-    incomplete = complete_level is None
     disagree = check["status"] == "mismatch" or (agent_level is not None and agent_level != level)
 
-    recommendations = list(review["recommendations"])
+    # 해당 규칙이 없다고 결론 났으면 에이전트가 쓴 요청 문장은 쓰지 않는다(근거 없는 요청이 된다)
+    agent_text = agent_level is not None and level != "safe"
+
+    recommendations = list(review["recommendations"]) if (agent_text or agent_level is None) else []
     engine_actions = {f["rule_code"]: f["recommended_action"] for f in engine["findings"]}
 
     for code in check["engine_only"]:
@@ -1477,15 +1565,17 @@ def final_view(review: dict, engine: dict, agent_level: str | None, check: dict)
     return {
         "level": level,
         "incomplete": incomplete,
-        "summary": compose_summary(engine, cards, level, incomplete=incomplete, agent_level=agent_level),
+        "summary": compose_summary(engine, cards, level, incomplete=incomplete, agent_level=agent_level, disputed=disputed),
         "agent_summary": review["summary"] if agent_level is not None else "",
         "cards": cards,
         # 근로자가 할 일 (에이전트 문장 + 에이전트가 놓친 규칙의 기준서 권장 행동)
         "recommendations": recommendations,
         # 사장님께 그대로 보낼 문장. 평가 에이전트가 사업주용으로 쓴 문장만 쓴다.
-        "requests": list(review["recommendations"]) if agent_level is not None else [],
+        "requests": list(review["recommendations"]) if agent_text else [],
         "confirmed_items": confirmed,
         "missing_items": list(dict.fromkeys(engine["missing_items"] + review["missing_items"])),
         "pending": [f for f in engine["findings"] if f["hit"] is None and f["rule_code"] not in final_codes],
+        # 에이전트는 지적했지만 규칙 계산이 계약서 값으로 통과를 확인한 규칙 (등급에 넣지 않음)
+        "disputed": disputed,
         "disagree": disagree,
     }

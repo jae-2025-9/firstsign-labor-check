@@ -76,8 +76,28 @@ def test_partial_cross_check_is_not_shown_as_match(monkeypatch):
         return contract, criteria, review, {}, "recorded"
 
     monkeypatch.setattr(service, "demo_inputs", recorded_with_changed_conditions)
+    # 기준서 원문도 바뀐 것으로 본다 (원문과 같으면 원문 대조가 조건을 되돌린다)
+    monkeypatch.setattr(service, "source_conditions", lambda *_: {})
     at = run_sample("1")
     text = page_text(at)
     assert "교차 검증 일부만 완료" in text
     assert "교차 검증 일치" not in text
     assert overall_badge(at) == "안심"
+
+
+def test_disputed_agent_flag_is_shown_separately(monkeypatch):
+    original = service.demo_inputs
+
+    def recorded_with_wrong_flag(sample_id):
+        contract, criteria, _, _, _ = original(sample_id)
+        review = {"review_level": "safe", "summary": "문제가 없습니다.", "matched_rules": ["LABOR_SIGN_COPY - 근로기준법 제17조 제2항"],
+                  "missing_items": [], "risky_clauses": [], "confirmed_items": [], "recommendations": ["사본을 주세요."]}
+        return contract, criteria, review, {}, "recorded"
+
+    monkeypatch.setattr(service, "demo_inputs", recorded_with_wrong_flag)
+    at = run_sample("4")
+    text = page_text(at)
+    assert overall_badge(at) == "안심"
+    assert "의견 차이 (1건)" in text
+    assert "교차 검증 결과가 다릅니다" in text
+    assert "사장님께 보낼 메시지" not in text
