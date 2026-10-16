@@ -1,0 +1,420 @@
+{
+ "kind": "studio.workflow-config-draft",
+ "schemaVersion": 4,
+ "exportedAt": "2026-10-16T10:16:14.925Z",
+ "exportedFrom": {
+  "workflowId": "agt_LVnts4GUpLXZ9GmCCjGn6p",
+  "workflowName": "알바 안심 체크 - Review Agent",
+  "configId": "cfg_7vrUvM4w7NwD7NdxNDWCXz",
+  "configVer": 13,
+  "note": "v13 원본에서 분류 설명과 결과 스키마 설명을 기준서 참조형으로 바꾸고 review_level 항목을 추가한 수정본"
+ },
+ "workflowConfig": {
+  "workflow_name": "알바 안심 체크 - Review Agent",
+  "pipelineType": "classify-extract",
+  "documentParseConfiguration": {
+   "modelName": "document-parse",
+   "mode": "standard",
+   "ocrMode": "force",
+   "lang": "ko",
+   "chartRecognition": false,
+   "coordinates": true,
+   "mergeMultipageTables": false,
+   "outputFormats": [
+    "html",
+    "text"
+   ],
+   "base64Encoding": [
+    "figure"
+   ]
+  },
+  "documentClassifyConfiguration": {
+   "schema": {
+    "type": "json_schema",
+    "json_schema": {
+     "name": "document-classify",
+     "schema": {
+      "type": "string",
+      "oneOf": [
+       {
+        "const": "safe",
+        "description": "안심. 입력 문서 2부(점검 기준)의 점검 규칙 중 어느 것에도 해당하지 않는 경우다. 규칙마다 2부의 '점검 조건'을 1부(근로계약 정보)에 적용해 판단한다. 근로시간, 시급, 적용 최저임금, 다음 해까지 이어지는지 같은 숫자와 사실은 3부(계산 보조값)의 값을 그대로 쓴다. 1부에서 '(비어 있음)'인 항목은 계약서에 적혀 있지 않은 것으로 본다."
+       },
+       {
+        "const": "check_needed",
+        "description": "확인 필요. 2부에서 분류가 '위험'인 규칙에는 하나도 해당하지 않지만, 분류가 '확인 필요'인 규칙에 하나 이상 해당하는 경우다. 규칙에 적힌 예외 조건(근로시간 기준 등)은 2부의 점검 조건과 3부의 계산값으로 판단한다."
+       },
+       {
+        "const": "risky",
+        "description": "위험. 2부에서 분류가 '위험'인 규칙 중 하나라도 해당하면 반드시 위험으로 분류한다. 최저임금 규칙은 3부의 '시급 환산' 값과 '계약 시작일 기준 적용 최저임금' 값을 숫자로 비교한다. 1부의 특약사항이 2부 위험 규칙의 점검 조건에 해당하는지도 확인한다."
+       }
+      ]
+     }
+    }
+   },
+   "modelName": ""
+  },
+  "informationExtractConfiguration": {
+   "modelName": "",
+   "schemas": [
+    {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "review_result_safe",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "review_level": {
+         "type": "string",
+         "description": "이 노드의 분류 값이다. 항상 safe라고 쓴다."
+        },
+        "summary": {
+         "type": "string",
+         "description": "판정 이유를 입력 문서 1부, 2부, 3부에 있는 내용만 근거로 3문장 이내로 쓴다. 첫 문장에는 3부의 시급 환산 값과 계약 시작일 기준 적용 최저임금을 숫자로 비교한 결과를 쓴다. 문서에 없는 법령이나 규칙을 지어내지 않는다."
+        },
+        "matched_rules": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "해당한 점검 규칙을 '규칙 코드 - 법령 근거' 형식으로 하나씩 쓴다. 규칙 코드와 법령 근거는 2부 점검 규칙에 적힌 값을 그대로 쓰고 2부에 없는 코드를 만들지 않는다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+         },
+         "description": "해당한 점검 규칙을 '규칙 코드 - 법령 근거' 형식으로 하나씩 쓴다. 규칙 코드와 법령 근거는 2부 점검 규칙에 적힌 값을 그대로 쓰고 2부에 없는 코드를 만들지 않는다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+        },
+        "missing_items": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "2부의 필수 기재사항과 1부를 비교해, 1부에서 '(비어 있음)'인 항목 이름을 하나씩 쓴다. 휴게시간, 임금지급일, 서명, 계약서 교부 문구가 비어 있거나 '아니오'이면 함께 쓴다. 없으면 빈 목록으로 둔다."
+         },
+         "description": "2부의 필수 기재사항과 1부를 비교해, 1부에서 '(비어 있음)'인 항목 이름을 하나씩 쓴다. 휴게시간, 임금지급일, 서명, 계약서 교부 문구가 비어 있거나 '아니오'이면 함께 쓴다. 없으면 빈 목록으로 둔다."
+        },
+        "risky_clauses": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "지적 대상 조항의 1부 원문과 지적 이유를 한 항목으로 쓴다. 조항이 비어 있어서 지적하는 경우에는 \"해당 조항 없음\"으로 시작한다. 지적할 조항이 없으면 빈 목록으로 둔다."
+         },
+         "description": "지적 대상 조항의 1부 원문과 지적 이유를 한 항목으로 쓴다. 조항이 비어 있어서 지적하는 경우에는 \"해당 조항 없음\"으로 시작한다. 지적할 조항이 없으면 빈 목록으로 둔다."
+        },
+        "confirmed_items": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "2부의 점검 규칙과 필수 기재사항 중 기준을 충족한 항목 이름을 하나씩 쓴다. 없으면 빈 목록으로 둔다."
+         },
+         "description": "2부의 점검 규칙과 필수 기재사항 중 기준을 충족한 항목 이름을 하나씩 쓴다. 없으면 빈 목록으로 둔다."
+        },
+        "recommendations": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "해당한 규칙마다 2부의 권장 행동을 바탕으로, 근로자가 사업주에게 그대로 보낼 수 있는 짧고 공손한 요청 문장을 쓴다. 어려운 법률 용어 대신 쉬운 말로 쓴다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+         },
+         "description": "해당한 규칙마다 2부의 권장 행동을 바탕으로, 근로자가 사업주에게 그대로 보낼 수 있는 짧고 공손한 요청 문장을 쓴다. 어려운 법률 용어 대신 쉬운 말로 쓴다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+        }
+       }
+      }
+     },
+     "schemaLayout": {
+      "version": 1,
+      "columns": [
+       {
+        "name": "review_level",
+        "source": "root"
+       },
+       {
+        "name": "summary",
+        "source": "root"
+       },
+       {
+        "name": "matched_rules",
+        "source": "root"
+       },
+       {
+        "name": "missing_items",
+        "source": "root"
+       },
+       {
+        "name": "risky_clauses",
+        "source": "root"
+       },
+       {
+        "name": "confirmed_items",
+        "source": "root"
+       },
+       {
+        "name": "recommendations",
+        "source": "root"
+       }
+      ]
+     },
+     "mode": "standard",
+     "modelName": "",
+     "nodeMode": "extract",
+     "manyRows": true,
+     "manyRowsThreshold": 50,
+     "manyRowsMaxRowsPerBatch": 400,
+     "manyRowsMaxConcurrent": 5
+    },
+    {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "review_result_check_needed",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "review_level": {
+         "type": "string",
+         "description": "이 노드의 분류 값이다. 항상 check_needed라고 쓴다."
+        },
+        "summary": {
+         "type": "string",
+         "description": "판정 이유를 입력 문서 1부, 2부, 3부에 있는 내용만 근거로 3문장 이내로 쓴다. 첫 문장에는 3부의 시급 환산 값과 계약 시작일 기준 적용 최저임금을 숫자로 비교한 결과를 쓴다. 문서에 없는 법령이나 규칙을 지어내지 않는다."
+        },
+        "matched_rules": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "해당한 점검 규칙을 '규칙 코드 - 법령 근거' 형식으로 하나씩 쓴다. 규칙 코드와 법령 근거는 2부 점검 규칙에 적힌 값을 그대로 쓰고 2부에 없는 코드를 만들지 않는다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+         },
+         "description": "해당한 점검 규칙을 '규칙 코드 - 법령 근거' 형식으로 하나씩 쓴다. 규칙 코드와 법령 근거는 2부 점검 규칙에 적힌 값을 그대로 쓰고 2부에 없는 코드를 만들지 않는다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+        },
+        "missing_items": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "2부의 필수 기재사항과 1부를 비교해, 1부에서 '(비어 있음)'인 항목 이름을 하나씩 쓴다. 휴게시간, 임금지급일, 서명, 계약서 교부 문구가 비어 있거나 '아니오'이면 함께 쓴다. 없으면 빈 목록으로 둔다."
+         },
+         "description": "2부의 필수 기재사항과 1부를 비교해, 1부에서 '(비어 있음)'인 항목 이름을 하나씩 쓴다. 휴게시간, 임금지급일, 서명, 계약서 교부 문구가 비어 있거나 '아니오'이면 함께 쓴다. 없으면 빈 목록으로 둔다."
+        },
+        "risky_clauses": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "지적 대상 조항의 1부 원문과 지적 이유를 한 항목으로 쓴다. 조항이 비어 있어서 지적하는 경우에는 \"해당 조항 없음\"으로 시작한다. 지적할 조항이 없으면 빈 목록으로 둔다."
+         },
+         "description": "지적 대상 조항의 1부 원문과 지적 이유를 한 항목으로 쓴다. 조항이 비어 있어서 지적하는 경우에는 \"해당 조항 없음\"으로 시작한다. 지적할 조항이 없으면 빈 목록으로 둔다."
+        },
+        "confirmed_items": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "2부의 점검 규칙과 필수 기재사항 중 기준을 충족한 항목 이름을 하나씩 쓴다. 없으면 빈 목록으로 둔다."
+         },
+         "description": "2부의 점검 규칙과 필수 기재사항 중 기준을 충족한 항목 이름을 하나씩 쓴다. 없으면 빈 목록으로 둔다."
+        },
+        "recommendations": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "해당한 규칙마다 2부의 권장 행동을 바탕으로, 근로자가 사업주에게 그대로 보낼 수 있는 짧고 공손한 요청 문장을 쓴다. 어려운 법률 용어 대신 쉬운 말로 쓴다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+         },
+         "description": "해당한 규칙마다 2부의 권장 행동을 바탕으로, 근로자가 사업주에게 그대로 보낼 수 있는 짧고 공손한 요청 문장을 쓴다. 어려운 법률 용어 대신 쉬운 말로 쓴다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+        }
+       }
+      }
+     },
+     "schemaLayout": {
+      "version": 1,
+      "columns": [
+       {
+        "name": "review_level",
+        "source": "root"
+       },
+       {
+        "name": "summary",
+        "source": "root"
+       },
+       {
+        "name": "matched_rules",
+        "source": "root"
+       },
+       {
+        "name": "missing_items",
+        "source": "root"
+       },
+       {
+        "name": "risky_clauses",
+        "source": "root"
+       },
+       {
+        "name": "confirmed_items",
+        "source": "root"
+       },
+       {
+        "name": "recommendations",
+        "source": "root"
+       }
+      ]
+     },
+     "mode": "standard",
+     "modelName": "",
+     "nodeMode": "extract",
+     "manyRows": true,
+     "manyRowsThreshold": 50,
+     "manyRowsMaxRowsPerBatch": 400,
+     "manyRowsMaxConcurrent": 5
+    },
+    {
+     "type": "json_schema",
+     "json_schema": {
+      "name": "review_result_risky",
+      "schema": {
+       "type": "object",
+       "properties": {
+        "review_level": {
+         "type": "string",
+         "description": "이 노드의 분류 값이다. 항상 risky라고 쓴다."
+        },
+        "summary": {
+         "type": "string",
+         "description": "판정 이유를 입력 문서 1부, 2부, 3부에 있는 내용만 근거로 3문장 이내로 쓴다. 첫 문장에는 3부의 시급 환산 값과 계약 시작일 기준 적용 최저임금을 숫자로 비교한 결과를 쓴다. 문서에 없는 법령이나 규칙을 지어내지 않는다."
+        },
+        "matched_rules": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "해당한 점검 규칙을 '규칙 코드 - 법령 근거' 형식으로 하나씩 쓴다. 규칙 코드와 법령 근거는 2부 점검 규칙에 적힌 값을 그대로 쓰고 2부에 없는 코드를 만들지 않는다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+         },
+         "description": "해당한 점검 규칙을 '규칙 코드 - 법령 근거' 형식으로 하나씩 쓴다. 규칙 코드와 법령 근거는 2부 점검 규칙에 적힌 값을 그대로 쓰고 2부에 없는 코드를 만들지 않는다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+        },
+        "missing_items": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "2부의 필수 기재사항과 1부를 비교해, 1부에서 '(비어 있음)'인 항목 이름을 하나씩 쓴다. 휴게시간, 임금지급일, 서명, 계약서 교부 문구가 비어 있거나 '아니오'이면 함께 쓴다. 없으면 빈 목록으로 둔다."
+         },
+         "description": "2부의 필수 기재사항과 1부를 비교해, 1부에서 '(비어 있음)'인 항목 이름을 하나씩 쓴다. 휴게시간, 임금지급일, 서명, 계약서 교부 문구가 비어 있거나 '아니오'이면 함께 쓴다. 없으면 빈 목록으로 둔다."
+        },
+        "risky_clauses": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "지적 대상 조항의 1부 원문과 지적 이유를 한 항목으로 쓴다. 조항이 비어 있어서 지적하는 경우에는 \"해당 조항 없음\"으로 시작한다. 지적할 조항이 없으면 빈 목록으로 둔다."
+         },
+         "description": "지적 대상 조항의 1부 원문과 지적 이유를 한 항목으로 쓴다. 조항이 비어 있어서 지적하는 경우에는 \"해당 조항 없음\"으로 시작한다. 지적할 조항이 없으면 빈 목록으로 둔다."
+        },
+        "confirmed_items": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "2부의 점검 규칙과 필수 기재사항 중 기준을 충족한 항목 이름을 하나씩 쓴다. 없으면 빈 목록으로 둔다."
+         },
+         "description": "2부의 점검 규칙과 필수 기재사항 중 기준을 충족한 항목 이름을 하나씩 쓴다. 없으면 빈 목록으로 둔다."
+        },
+        "recommendations": {
+         "type": "array",
+         "items": {
+          "type": "string",
+          "description": "해당한 규칙마다 2부의 권장 행동을 바탕으로, 근로자가 사업주에게 그대로 보낼 수 있는 짧고 공손한 요청 문장을 쓴다. 어려운 법률 용어 대신 쉬운 말로 쓴다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+         },
+         "description": "해당한 규칙마다 2부의 권장 행동을 바탕으로, 근로자가 사업주에게 그대로 보낼 수 있는 짧고 공손한 요청 문장을 쓴다. 어려운 법률 용어 대신 쉬운 말로 쓴다. 해당한 규칙이 없으면 빈 목록으로 둔다."
+        }
+       }
+      }
+     },
+     "schemaLayout": {
+      "version": 1,
+      "columns": [
+       {
+        "name": "review_level",
+        "source": "root"
+       },
+       {
+        "name": "summary",
+        "source": "root"
+       },
+       {
+        "name": "matched_rules",
+        "source": "root"
+       },
+       {
+        "name": "missing_items",
+        "source": "root"
+       },
+       {
+        "name": "risky_clauses",
+        "source": "root"
+       },
+       {
+        "name": "confirmed_items",
+        "source": "root"
+       },
+       {
+        "name": "recommendations",
+        "source": "root"
+       }
+      ]
+     },
+     "mode": "standard",
+     "modelName": "",
+     "nodeMode": "extract",
+     "manyRows": true,
+     "manyRowsThreshold": 50,
+     "manyRowsMaxRowsPerBatch": 400,
+     "manyRowsMaxConcurrent": 5
+    }
+   ],
+   "categorySchemaMapping": {
+    "safe": "review_result_safe",
+    "check_needed": "review_result_check_needed",
+    "risky": "review_result_risky"
+   },
+   "confidenceThreshold": 0.9676
+  },
+  "pipelineEdges": [
+   {
+    "id": "e0",
+    "source": {
+     "nodeType": "parse"
+    },
+    "target": {
+     "nodeType": "classify",
+     "name": "Classify-1"
+    }
+   },
+   {
+    "id": "e1",
+    "source": {
+     "nodeType": "classify",
+     "name": "Classify-1"
+    },
+    "target": {
+     "nodeType": "extract",
+     "name": "review_result_safe"
+    },
+    "condition": {
+     "conditionName": "safe"
+    }
+   },
+   {
+    "id": "e2",
+    "source": {
+     "nodeType": "classify",
+     "name": "Classify-1"
+    },
+    "target": {
+     "nodeType": "extract",
+     "name": "review_result_check_needed"
+    },
+    "condition": {
+     "conditionName": "check_needed"
+    }
+   },
+   {
+    "id": "e3",
+    "source": {
+     "nodeType": "classify",
+     "name": "Classify-1"
+    },
+    "target": {
+     "nodeType": "extract",
+     "name": "review_result_risky"
+    },
+    "condition": {
+     "conditionName": "risky"
+    }
+   }
+  ]
+ }
+}

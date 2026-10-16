@@ -1,0 +1,17 @@
+############################################################
+# 첫사인 알바 안심 체크
+# Requirements (Python 3.11+)
+############################################################
+
+# Web UI
+streamlit>=1.46.0
+
+# Upstage Studio API (OpenAI Compatible SDK)
+openai>=1.99.0
+
+# Environment Variables
+python-dotenv>=1.1.0
+
+# PDF Generation
+reportlab>=4.2.2
+Pillow>=11.0.0

@@ -1,0 +1,183 @@
+{
+  "kind": "studio.workflow-config-draft",
+  "schemaVersion": 4,
+  "exportedAt": "2026-10-16T10:16:05.554Z",
+  "exportedFrom": {
+    "workflowId": "agt_4GJMgpjwGtoHseqQS96mhj",
+    "workflowName": "알바 안심 체크 - Criteria Agent",
+    "configId": "cfg_jyoRnqE3fdZETF9QPjZCFZ",
+    "configVer": 2
+  },
+  "workflowConfig": {
+    "workflow_name": "알바 안심 체크 - Criteria Agent",
+    "pipelineType": "extract",
+    "documentParseConfiguration": {
+      "modelName": "document-parse",
+      "mode": "standard",
+      "ocrMode": "force",
+      "lang": "ko",
+      "chartRecognition": false,
+      "coordinates": true,
+      "mergeMultipageTables": false,
+      "outputFormats": [
+        "html",
+        "text"
+      ],
+      "base64Encoding": [
+        "figure"
+      ]
+    },
+    "informationExtractConfiguration": {
+      "modelName": "",
+      "schemas": [
+        {
+          "type": "json_schema",
+          "json_schema": {
+            "name": "criteria",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "criteria_name": {
+                  "type": "string",
+                  "description": "점검 기준서 첫머리의 제목을 추출한다. 문서 제목만 쓰고 부제나 설명 문장은 제외한다. 없으면 빈 문자열로 둔다."
+                },
+                "criteria_version": {
+                  "type": "string",
+                  "description": "기준서 첫머리에 적힌 적용 연도와 작성일 또는 개정일을 추출한다(예: 2026년 기준, 2026-03-01 작성). 없으면 빈 문자열로 둔다."
+                },
+                "required_items": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "description": "'필수 기재사항' 절에 나열된 항목명을 항목마다 하나씩 추출한다. 번호, 불릿 기호, 괄호 안의 법령 표기는 제외하고 항목명만 쓴다. 없으면 빈 목록으로 둔다."
+                  },
+                  "description": ""
+                },
+                "min_wage_hourly": {
+                  "type": "number",
+                  "description": "'최저임금' 절에 적힌 해당 연도의 시간급을 원 단위 숫자로 추출한다. 쉼표는 제외하고 숫자만 쓴다. 여러 연도의 금액이 있으면 기준서의 적용 연도(criteria_version)에 해당하는 값만 쓴다. 없으면 비워 둔다."
+                },
+                "legal_basis": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "description": "기준서에 인용된 법령 조문을 인용마다 하나씩 추출한다(예: 근로기준법 제17조, 최저임금법 제6조). 조문 번호까지 포함해 쓴다. 없으면 빈 목록으로 둔다."
+                  },
+                  "description": ""
+                },
+                "min_wage_hourly_2027": {
+                  "type": "number",
+                  "description": "'최저임금' 절에 적힌 2027년 적용 시간급을 원 단위 숫자로 추출한다. 쉼표는 제외하고 숫자만 쓴다. 2027년 금액이 없으면 비워 둔다."
+                },
+                "check_rules": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "rule_code": {
+                        "type": "string",
+                        "description": "'점검 규칙' 표의 규칙 코드 열 값(예: LABOR_MIN_WAGE)."
+                      },
+                      "check_condition": {
+                        "type": "string",
+                        "description": "같은 행의 점검 조건(점검 내용) 열을 원문 그대로 쓴다."
+                      },
+                      "category": {
+                        "type": "string",
+                        "description": "같은 행의 분류 열 값(예: 위험, 확인 필요)."
+                      },
+                      "legal_basis": {
+                        "type": "string",
+                        "description": "같은 행의 법령 근거 열 값(예: 근로기준법 제20조)."
+                      },
+                      "recommended_action": {
+                        "type": "string",
+                        "description": "같은 행의 권장 행동 열 값. 표에 권장 행동 열이 없으면 빈 문자열로 둔다."
+                      }
+                    }
+                  },
+                  "description": "'점검 규칙' 표의 행을 규칙마다 하나씩 추출한다. 같은 행의 값들을 하나의 객체로 묶는다. 점검 규칙 표가 없으면 빈 목록으로 둔다."
+                }
+              }
+            }
+          },
+          "schemaLayout": {
+            "version": 1,
+            "columns": [
+              {
+                "name": "criteria_name",
+                "source": "root"
+              },
+              {
+                "name": "criteria_version",
+                "source": "root"
+              },
+              {
+                "name": "required_items",
+                "source": "root"
+              },
+              {
+                "name": "min_wage_hourly",
+                "source": "root"
+              },
+              {
+                "name": "legal_basis",
+                "source": "root"
+              },
+              {
+                "name": "min_wage_hourly_2027",
+                "source": "root"
+              },
+              {
+                "name": "rule_code",
+                "source": "group_table",
+                "groupTableKey": "check_rules"
+              },
+              {
+                "name": "check_condition",
+                "source": "group_table",
+                "groupTableKey": "check_rules"
+              },
+              {
+                "name": "category",
+                "source": "group_table",
+                "groupTableKey": "check_rules"
+              },
+              {
+                "name": "legal_basis",
+                "source": "group_table",
+                "groupTableKey": "check_rules"
+              },
+              {
+                "name": "recommended_action",
+                "source": "group_table",
+                "groupTableKey": "check_rules"
+              }
+            ]
+          },
+          "mode": "standard",
+          "modelName": "",
+          "nodeMode": "extract",
+          "manyRows": true,
+          "manyRowsThreshold": 50,
+          "manyRowsMaxRowsPerBatch": 400,
+          "manyRowsMaxConcurrent": 5
+        }
+      ],
+      "categorySchemaMapping": {},
+      "confidenceThreshold": 0.9676
+    },
+    "pipelineEdges": [
+      {
+        "id": "e0",
+        "source": {
+          "nodeType": "parse"
+        },
+        "target": {
+          "nodeType": "extract",
+          "name": "criteria"
+        }
+      }
+    ]
+  }
+}
