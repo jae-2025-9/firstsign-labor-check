@@ -452,30 +452,126 @@ def run_final(contract, criteria, agent_level, matched_rules, **review):
     return engine, final_view(review, engine, agent_level, check)
 
 
-@pytest.mark.parametrize("field,value,code", [
-    ("wage_amount", [10800, 9500], "LABOR_MIN_WAGE"),
-    ("wage_amount", "10,800원 (수습 3개월은 9,500원)", "LABOR_MIN_WAGE"),
-    ("contract_end_date", ["2026-12-31, 2027-12-31"], "LABOR_MIN_WAGE_NEXT"),
-    ("contract_end_date", "2026-12-31 (자동 연장 시 2027-12-31)", "LABOR_MIN_WAGE_NEXT"),
-    ("break_time", "12:00~12:30 또는 13:00~13:30", "LABOR_BREAK"),
-    ("break_time", "21:00~22:00", "LABOR_BREAK"),
-    ("weekly_holiday", "매주 협의하여 정한다.", "LABOR_WEEKLY_HOLIDAY"),
-    ("copy_delivery_clause", "근로자에게 계약서를 교부한다는 규정은 없다.", "LABOR_SIGN_COPY"),
-    ("is_signed", [True, False], "LABOR_SIGN_COPY"),
-])
-def test_ambiguous_input_never_disputes_agent(criteria, field, value, code):
-    # 계약서 값이 모호하면 규칙 계산은 통과로 확정하지 않는다. 에이전트 지적은 카드로 남는다.
-    contract = load("contract_sample1.json")
-    contract[field] = value
-    if code == "LABOR_MIN_WAGE_NEXT":
-        contract["wage_amount"] = 10500
+AMBIGUOUS_INPUTS = [
+    ({"wage_amount": [10800, 9500]}, "LABOR_MIN_WAGE"),
+    ({"wage_amount": "10,800원 (수습 3개월은 9,500원)"}, "LABOR_MIN_WAGE"),
+    ({"wage_amount": "10,800원 (수습기간 9천원)"}, "LABOR_MIN_WAGE"),
+    ({"wage_amount": 10500, "contract_end_date": ["2026-12-31, 2027-12-31"]}, "LABOR_MIN_WAGE_NEXT"),
+    ({"wage_amount": 10500, "contract_end_date": "2026-12-31 (자동 연장 시 2027-12-31)"}, "LABOR_MIN_WAGE_NEXT"),
+    ({"wage_amount": 10500, "contract_end_date": ["2026-12-31", "2027년 12월"]}, "LABOR_MIN_WAGE_NEXT"),
+    ({"wage_amount": 10500, "contract_end_date": ["2026-12-31", "2027-02-30"]}, "LABOR_MIN_WAGE_NEXT"),
+    ({"break_time": "12:00~12:30 또는 13:00~13:30"}, "LABOR_BREAK"),
+    ({"break_time": "21:00~22:00"}, "LABOR_BREAK"),
+    ({"work_start_time": "22:00", "work_end_time": "07:00", "break_time": "23:45~00:15, 00:00~00:30"}, "LABOR_BREAK"),
+    ({"work_end_time": "18:00", "break_time": "평일 12:00~12:30, 주말 12:00~13:00"}, "LABOR_BREAK"),
+    ({"weekly_holiday": "매주 협의하여 정한다."}, "LABOR_WEEKLY_HOLIDAY"),
+    ({"copy_delivery_clause": "근로자에게 계약서를 교부한다는 규정은 없다."}, "LABOR_SIGN_COPY"),
+]
+
+
+@pytest.mark.parametrize("changes,code", AMBIGUOUS_INPUTS)
+def test_ambiguous_input_never_disputes_agent(criteria, changes, code):
+    # 계약서 값이 모호하면 규칙 계산은 판단을 보류한다. 에이전트 지적은 카드로 남고 등급은 기준서 분류대로다.
+    contract = {**load("contract_sample1.json"), **changes}
     engine, final = run_final(contract, criteria, "check_needed", [f"{code} - 근거"], recommendations=["확인해 주세요."])
     finding = next(f for f in engine["findings"] if f["rule_code"] == code)
-    assert finding["hit"] is not False, (field, value)
+    assert finding["hit"] is None, changes
     assert code in {c["rule_code"] for c in final["cards"]}
     assert final["disputed"] == []
-    assert final["level"] in ("check_needed", "risky")
-    assert final["requests"]
+    assert final["level"] == finding["level"]
+    assert final["requests"] == ["확인해 주세요."]
+
+
+@pytest.mark.parametrize("signed", [[True, False], [True, "미서명"]])
+def test_conflicting_signature_is_not_a_pass(criteria, signed):
+    contract = {**load("contract_sample1.json"), "is_signed": signed}
+    engine, final = run_final(contract, criteria, "check_needed", ["LABOR_SIGN_COPY - 근거"])
+    assert next(f for f in engine["findings"] if f["rule_code"] == "LABOR_SIGN_COPY")["hit"] is not False
+    assert final["disputed"] == [] and final["level"] == "check_needed"
+
+
+NORMAL_INPUTS = [
+    ({"work_end_time": "18:00", "break_time": "평일 12:00~13:00"}, "LABOR_BREAK"),
+    ({"break_time": "12:00~12:30, 14:00~14:15"}, "LABOR_BREAK"),
+    ({"wage_amount": "10,800원 (2026-10-01 기준)"}, "LABOR_MIN_WAGE"),
+    ({"wage_amount": "월 2,300,000원 (주 40시간, 주휴 포함 209시간)", "wage_type": "월급",
+      "work_end_time": "18:00", "break_time": "12:00~13:00"}, "LABOR_MIN_WAGE"),
+    ({"wage_amount": ["10,800원", "10800"]}, "LABOR_MIN_WAGE"),
+    ({"wage_amount": 10800, "contract_end_date": "2027-09-30 (연장 없음)"}, "LABOR_MIN_WAGE_NEXT"),
+    ({"wage_amount": 10500, "contract_end_date": "2026-12-31 (연장 없음)"}, "LABOR_MIN_WAGE_NEXT"),
+    ({"copy_delivery_clause": "근로자에게 계약서를 교부한다. 교부 비용은 없다."}, "LABOR_SIGN_COPY"),
+    ({"is_signed": ["true", "예"]}, "LABOR_SIGN_COPY"),
+]
+
+
+@pytest.mark.parametrize("changes,code", NORMAL_INPUTS)
+def test_clear_input_still_decides(criteria, changes, code):
+    # 뜻이 분명한 정상 문구는 계속 계산한다. 계산상 통과인 규칙을 에이전트가 지적하면 의견 차이로 둔다.
+    contract = {**load("contract_sample1.json"), **changes}
+    engine, final = run_final(contract, criteria, "check_needed", [f"{code} - 근거"])
+    assert next(f for f in engine["findings"] if f["rule_code"] == code)["hit"] is False, changes
+    assert [d["rule_code"] for d in final["disputed"]] == [code]
+    assert final["level"] == "safe" and final["cards"] == []
+
+
+def test_unrelated_pending_rule_does_not_raise_level(criteria):
+    # 에이전트가 지적하지 않은 판단 보류 규칙의 분류를 빌려 위험으로 올리지 않는다
+    contract = {**load("contract_sample1.json"), "special_terms": ["위약금은 없다."]}
+    engine, final = run_final(contract, criteria, "risky", ["LABOR_BREAK - 제54조"])
+    assert "LABOR_PENALTY" in engine["undetermined_codes"]
+    assert final["level"] == "safe"
+
+    contract = {**load("contract_sample1.json"), "wage_amount": [10800, 9500]}
+    _, final = run_final(contract, criteria, "risky", ["기타 - 사장님 태도"])
+    assert final["level"] == "check_needed"
+
+
+def test_evidence_free_agent_warning_is_not_followed(criteria):
+    # 실제 배포에서 나온 응답: 지적 규칙·조항 없이 '위험'만 반환 → 기준서 판정을 따른다
+    _, final = run_final(load("contract_sample1.json"), criteria, "risky", [], recommendations=[])
+    assert final["level"] == "safe"
+    assert "근거를 찾지 못해" in final["summary"]
+
+
+@pytest.mark.parametrize("rules", [
+    ["LABOR_SIGN_COPY - 서명 누락; 기준서 밖 지적 - 계약 외 사항"],
+    ["LABOR_SIGN_COPY - 서명 누락", "기준서 밖 지적 - 계약 외 사항"],
+])
+def test_unlinked_part_survives_regardless_of_split(criteria, rules):
+    _, final = run_final(load("contract_sample1.json"), criteria, "risky", rules, recommendations=["계약 외 사항을 확인해 주세요."])
+    assert final["level"] == "check_needed"
+    assert final["requests"] == ["계약 외 사항을 확인해 주세요."]
+
+
+def test_adopted_request_survives_mixed_keywords(criteria):
+    # 채택된 규칙(필수 기재사항)의 요청에 '교부'가 섞여도 지우지 않는다
+    contract = {**load("contract_sample1.json"), "job_description": ""}
+    _, final = run_final(contract, criteria, "check_needed", ["LABOR_REQUIRED_TERMS", "LABOR_SIGN_COPY"],
+                         recommendations=["업무 내용을 명시한 계약서를 교부해 주세요."])
+    assert [d["rule_code"] for d in final["disputed"]] == ["LABOR_SIGN_COPY"]
+    assert final["requests"] == ["업무 내용을 명시한 계약서를 교부해 주세요."]
+
+
+def test_every_card_keeps_an_action(criteria):
+    # 의견 차이 문장을 뺀 뒤에도 남은 카드마다 할 일이 있다
+    contract = {**load("contract_sample1.json"), "job_description": ""}
+    _, final = run_final(contract, criteria, "check_needed", ["LABOR_REQUIRED_TERMS", "LABOR_BREAK"],
+                         recommendations=["휴게시간을 넣어 주세요."])
+    assert final["requests"] == []
+    assert any("빠진 항목" in r for r in final["recommendations"])
+
+
+def test_review_input_keeps_ambiguous_raw_values():
+    # 모호한 값은 평가 입력 문서에 원문 그대로 남겨 평가 에이전트가 판단할 수 있게 한다
+    from review_builder import contract_value
+    assert "10800" in contract_value({"wage_amount": [10800, 9500]}, "wage_amount")
+    assert "9500" in contract_value({"wage_amount": [10800, 9500]}, "wage_amount")
+    value = contract_value({"wage_amount": "10,800원 (수습 3개월은 9,500원)"}, "wage_amount")
+    assert "9,500원" in value and "정하지 못함" in value
+    assert contract_value({"wage_amount": [10800]}, "wage_amount") == "10800"
+    assert "정하지 못함" in contract_value({"is_signed": [True, False]}, "is_signed")
+    assert contract_value({"is_signed": [True]}, "is_signed") == "예"
+    assert contract_value({}, "is_signed") == "(비어 있음)"
 
 
 def test_unlinked_warning_survives_unrelated_dispute(criteria):
@@ -574,6 +670,31 @@ def test_source_table_read_from_pdf():
         assert condition_shape(cells["check_condition"]) == condition_shape(KNOWN_CONDITIONS[code][0]), code
         assert cells["legal_basis"] and cells["recommended_action"], code
     assert condition_shape(table["LABOR_MIN_WAGE_NEXT"]["recommended_action"]).endswith("원이상으로올려달라고요청하세요")
+
+
+def test_source_table_drops_row_cut_at_page_edge(tmp_path):
+    # 칸 내용이 페이지 아래 가장자리까지 이어지면 잘렸을 수 있어 그 행은 원문으로 쓰지 않는다
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from app import criteria_source_table
+    from config import FONT_NAME
+    import review_builder  # noqa: F401  (한글 글꼴 등록)
+
+    path = tmp_path / "criteria.pdf"
+    c = canvas.Canvas(str(path), pagesize=A4)
+    c.setFont(FONT_NAME, 9)
+    for x, label in ((42, "규칙 코드"), (155, "점검 조건"), (367, "분류")):
+        c.drawString(x, 700, label)
+    c.drawString(42, 680, "LABOR_A")
+    c.drawString(155, 680, "온전한 조건이다.")
+    c.drawString(42, 60, "LABOR_B")
+    c.drawString(155, 60, "기존 조건이다.")
+    c.drawString(155, 25, "단, 추가 조건이 있다.")
+    c.save()
+
+    table = criteria_source_table(path)
+    assert table["LABOR_A"]["check_condition"] == "온전한 조건이다."
+    assert "LABOR_B" not in table
 
 
 def test_source_table_skips_footer_and_repeated_header(tmp_path):

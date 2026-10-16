@@ -11,6 +11,7 @@ Studio 에이전트는 문서 파일만 입력받는다. 두 JSON을 평가 에�
 3부. 계산 보조값 (코드가 1부로 계산한 숫자. 판정은 평가 에이전트가 한다)
 """
 
+import re
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -34,7 +35,9 @@ from config import (
 )
 from file_manager import ensure_directory
 from rules import (
+    amount_candidates,
     as_list,
+    is_blank,
     summarize_criteria,
     text,
     to_bool,
@@ -114,14 +117,23 @@ def contract_value(contract: dict, key: str) -> str:
     """
 
     value = contract.get(key)
+    raw = " / ".join(str(item) for item in as_list(value) if not is_blank(item))
 
     if key == "is_signed":
         signed = to_bool(value)
-        return EMPTY if signed is None else ("예" if signed else "아니오")
+        if signed is None:
+            return f"{raw} (예/아니오로 정하지 못함)" if raw else EMPTY
+        return "예" if signed else "아니오"
 
     if key == "wage_amount":
+        # 숫자 하나로 정해질 때만 숫자로 적고, 그 밖에는 추출 원문을 그대로 적어 판단 근거를 남긴다
         number = to_number(value)
-        return EMPTY if number is None else f"{number:.0f}"
+        plain = all(isinstance(item, (int, float)) or re.fullmatch(r"[\d,.\s]+원?", str(item)) for item in as_list(value) if not is_blank(item))
+        if number is not None and plain:
+            return f"{number:.0f}"
+        if not raw:
+            return EMPTY
+        return raw if number is not None and len(amount_candidates(value)) <= 1 else f"{raw} (금액을 하나로 정하지 못함)"
 
     if key == "special_terms":
         return " / ".join(str(item) for item in as_list(value)) or "없음"

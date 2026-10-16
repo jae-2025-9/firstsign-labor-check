@@ -133,7 +133,8 @@ def criteria_source_table(criteria_file: Path = CRITERIA_FILE) -> dict[str, dict
     표를 찾지 못하면 빈 dict(바로잡지 않음)를 돌려준다.
     """
 
-    pieces: list[tuple[float, str]] = []
+    # (x, 글자, 가장자리 여부)
+    pieces: list[tuple[float, str, bool]] = []
 
     try:
         for page in PdfReader(str(criteria_file)).pages:
@@ -142,21 +143,22 @@ def criteria_source_table(criteria_file: Path = CRITERIA_FILE) -> dict[str, dict
 
             def visit(text_, cm, tm, font, size, height=height):
                 y = tm[4] * cm[1] + tm[5] * cm[3] + cm[5]
-                if text_.strip() and height * PAGE_MARGIN < y < height * (1 - PAGE_MARGIN):
-                    pieces.append((tm[4] * cm[0] + tm[5] * cm[2] + cm[4], text_.strip()))
+                if text_.strip():
+                    edge = not (height * PAGE_MARGIN < y < height * (1 - PAGE_MARGIN))
+                    pieces.append((tm[4] * cm[0] + tm[5] * cm[2] + cm[4], text_.strip(), edge))
 
             page.extract_text(visitor_text=visit)
 
     except (OSError, ValueError, KeyError, TypeError, PdfReadError):
         return {}
 
-    header = next((i for i, (_, t) in enumerate(pieces) if t.startswith("규칙 코드")), None)
-    first_code = next((i for i in range(header + 1, len(pieces)) if RULE_CODE_PATTERN.fullmatch(pieces[i][1])), None) if header is not None else None
+    header = next((i for i, (_, t, edge) in enumerate(pieces) if not edge and t.startswith("규칙 코드")), None)
+    first_code = next((i for i in range(header + 1, len(pieces)) if not pieces[i][2] and RULE_CODE_PATTERN.fullmatch(pieces[i][1])), None) if header is not None else None
 
     if first_code is None:
         return {}
 
-    head = pieces[header:first_code]
+    head = [(x, t) for x, t, edge in pieces[header:first_code] if not edge]
     head_texts = {t for _, t in head}
     code_x = pieces[header][0]
 
@@ -176,9 +178,16 @@ def criteria_source_table(criteria_file: Path = CRITERIA_FILE) -> dict[str, dict
     columns = sorted(starts.items())
     table_left = columns[0][0]
     rows: dict[str, dict[str, list[str]]] = {}
+    incomplete: set[str] = set()
     current = None
 
-    for x, t in pieces[first_code:]:
+    for x, t, edge in pieces[first_code:]:
+
+        if edge:
+            # 머리말·바닥글 자리. 표 칸 위치에 글자가 있으면 칸 내용이 잘렸을 수 있어 그 행은 바로잡지 않는다.
+            if current and x >= table_left - 2:
+                incomplete.add(current)
+            continue
 
         if t in head_texts:
             continue  # 다음 페이지에 반복된 머리글
@@ -196,7 +205,10 @@ def criteria_source_table(criteria_file: Path = CRITERIA_FILE) -> dict[str, dict
         if current and key:
             rows[current].setdefault(key, []).append(t)
 
-    return {code: {key: " ".join(parts) for key, parts in cells.items()} for code, cells in rows.items() if cells}
+    return {
+        code: {key: " ".join(parts) for key, parts in cells.items()}
+        for code, cells in rows.items() if cells and code not in incomplete
+    }
 
 
 @lru_cache(maxsize=4)
