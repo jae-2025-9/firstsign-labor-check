@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentClient, find_classification, normalize_review, upload_file } from "../src/lib/agent-client";
+import { AgentClient, AgentError, find_classification, normalize_review, upload_file } from "../src/lib/agent-client";
 
 const options = { api_key: "test-key", agent_id: "test-agent", config_id: "1", poll_interval_ms: 1 };
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
@@ -58,6 +58,74 @@ describe("Upstage client", () => {
     expect(fetcher.mock.calls.length).toBeLessThanOrEqual(6);
   });
 
+  it("allows 420 seconds by default without starting a later poll", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async () => response({ status: "in_progress" }));
+    const pending = new AgentClient({ ...options, fetch: fetcher, poll_interval_ms: 180_000 }).wait_until_complete("job-test");
+    const assertion = expect(pending).rejects.toThrow("시간이 초과");
+    await vi.advanceTimersByTimeAsync(419_999);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("limits the last HTTP request to the remaining polling time without retry", async () => {
+    vi.useFakeTimers();
+    const fetcher = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(response({ status: "queued" }))
+      .mockImplementation(() => new Promise(() => {}));
+    const pending = new AgentClient({ ...options, fetch: fetcher, timeout_ms: 100, poll_interval_ms: 80, http_timeout_ms: 60_000 }).wait_until_complete("job-test");
+    const assertion = expect(pending).rejects.toThrow("시간이 초과");
+    await vi.advanceTimersByTimeAsync(99);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[1][1]?.signal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await assertion;
+    expect(fetcher.mock.calls[1][1]?.signal?.aborted).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["model_request_error", "server_error", "rate_limit_exceeded", "timeout", "internal_error"])("creates another job after the retryable %s failure", async (code) => {
+    let jobs = 0;
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => {
+      if (init?.method === "POST") return response({ id: `job-${++jobs}` });
+      return jobs < 3
+        ? response({ status: "failed", error: { code, message: "private-document-value" } })
+        : response({ status: "completed", output_text: '{"summary":"완료"}' });
+    });
+    await expect(new AgentClient({ ...options, fetch: fetcher }).run("file-test")).resolves.toMatchObject({ result: { summary: "완료" } });
+    expect(jobs).toBe(3);
+    expect(fetcher).toHaveBeenCalledTimes(6);
+    for (const [, init] of fetcher.mock.calls.filter(([, init]) => init?.method === "POST")) {
+      expect(JSON.parse(init?.body as string).input[0].content[0].file_id).toBe("file-test");
+    }
+  });
+
+  it("stops retryable failures after three jobs even when a higher limit is requested", async () => {
+    let jobs = 0;
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(async (_url, init) => init?.method === "POST"
+      ? response({ id: `job-${++jobs}` })
+      : response({ status: "failed", error: { code: "model_request_error", message: "private-document-value" } }));
+    const pending = new AgentClient({ ...options, fetch: fetcher, attempts: 10 }).run("file-test");
+    await expect(pending).rejects.toMatchObject({ name: "AgentError", retryable: true, message: "에이전트 실행에 실패했습니다." });
+    expect(jobs).toBe(3);
+  });
+
+  it("does not retry permanent job failures, invalid JSON, or HTTP failures", async () => {
+    for (const terminal of [
+      { status: "failed", error: { code: "invalid_input" } },
+      { status: "completed", output_text: "bad json" },
+    ]) {
+      const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response({ id: "job-test" })).mockResolvedValueOnce(response(terminal));
+      await expect(new AgentClient({ ...options, fetch: fetcher }).run("file-test")).rejects.toBeInstanceOf(AgentError);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+    }
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(response({ id: "job-test" })).mockResolvedValueOnce(response({}, 503));
+    await expect(new AgentClient({ ...options, fetch: fetcher }).run("file-test")).rejects.toThrow("HTTP 503");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
   it("aborts HTTP requests and does not wait for a stuck fetch", async () => {
     vi.useFakeTimers();
     const fetcher = vi.fn<typeof fetch>().mockImplementation(() => new Promise(() => {}));
@@ -86,7 +154,33 @@ describe("review classification", () => {
   it("selects the more severe grade and reports a conflict", () => {
     const review = normalize_review({ review_level: "안심", summary: ["요약"], matched_rules: "LABOR_BREAK" }, { classification: "risky" });
     expect(review).toMatchObject({ review_level: "risky", schema_level: "safe", classify_level: "risky", level_conflict: true, matched_rules: ["LABOR_BREAK"] });
-    expect(normalize_review({}, {}).review_level).toBeNull();
+    expect(normalize_review({ summary: ["요약"] }, {}).review_level).toBeNull();
     expect(normalize_review({ review_level: "risky" }, { classification: "safe" }).review_level).toBe("risky");
+  });
+
+  it("prefers executed output over workflow definitions", () => {
+    const raw = {
+      output: [{ type: "classification", label: "risky" }],
+      edges: [{ condition: "safe" }, { condition: "check_needed" }, { condition: "risky" }],
+    };
+    expect(find_classification(raw)).toBe("risky");
+    expect(normalize_review({ review_level: ["safe"], summary: ["..."] }, raw)).toMatchObject({ review_level: "risky", level_conflict: true });
+    expect(find_classification({ output: [{ result: "safe" }], label: "risky" })).toBe("safe");
+    expect(find_classification({ output: [{ label: "safe" }, { label: "risky" }], label: "safe" })).toBeNull();
+  });
+
+  it.each([{}, { summary: [] }, { summary: null }, { review_level: [] }, { summary: " " }, { unknown: "value" }])("rejects an empty review schema %j", (review) => {
+    expect(() => normalize_review(review, { output: [{ label: "safe" }] })).toThrow("결과가 비어 있습니다");
+  });
+
+  it.each(["review_level", "summary", "matched_rules", "missing_items", "risky_clauses", "confirmed_items", "recommendations"])("rejects an invalid %s type", (field) => {
+    for (const value of [{ text: "x" }, 7, true]) {
+      expect(() => normalize_review({ summary: "요약", [field]: value }, {})).toThrow(`${field} 형식이 올바르지 않습니다`);
+    }
+  });
+
+  it("accepts review_level as the only populated field", () => {
+    expect(normalize_review({ review_level: ["check_needed"] }, {})).toMatchObject({ review_level: "check_needed", level_conflict: false, summary: "" });
+    expect(normalize_review({ review_level: "safe" }, {})).toMatchObject({ review_level: "safe", matched_rules: [] });
   });
 });

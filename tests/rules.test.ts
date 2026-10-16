@@ -4,7 +4,7 @@ import {
   compute_facts, criteria_rules, cross_check, engine_review, evaluate, final_view,
   looks_like_contract, more_severe, normalize_level, parse_break, parse_times,
   parse_work_days, to_number, won, to_date, condition_supported, KNOWN_CONDITIONS,
-  type ExtractedData, type Review,
+  criteria_problems, summarize_criteria, field_state, copy_clause_status, type ExtractedData, type Review,
 } from "../src/lib/rules";
 
 const load = (name: string): ExtractedData => JSON.parse(readFileSync(new URL(`../fixtures/expected/${name}.json`, import.meta.url), "utf8"));
@@ -17,7 +17,7 @@ describe("원본 샘플 판정", () => {
   it.each([
     [1, "safe", []],
     [2, "check_needed", ["LABOR_REQUIRED_TERMS", "LABOR_BREAK", "LABOR_WEEKLY_HOLIDAY", "LABOR_SIGN_COPY", "LABOR_MIN_WAGE_NEXT"]],
-    [3, "risky", ["LABOR_MIN_WAGE", "LABOR_PENALTY", "LABOR_BREAK", "LABOR_WEEKLY_HOLIDAY", "LABOR_SIGN_COPY", "LABOR_MIN_WAGE_NEXT"]],
+    [3, "risky", ["LABOR_MIN_WAGE", "LABOR_PENALTY", "LABOR_REQUIRED_TERMS", "LABOR_BREAK", "LABOR_WEEKLY_HOLIDAY", "LABOR_SIGN_COPY", "LABOR_MIN_WAGE_NEXT"]],
     [4, "safe", []],
   ] as const)("샘플 %i", (id, level, codes) => {
     const result = evaluate(sample(id), criteria());
@@ -98,7 +98,7 @@ describe("기준서 변경과 보류", () => {
     const facts = compute_facts(sample(), c); expect(facts.next_min_wage).toBeNull(); expect(facts.notes.some(n => n.includes("다음 해 최저임금"))).toBe(true);
   });
   it("모든 원본 조건을 지원한다", () => {
-    for (const [code, [sentence]] of Object.entries(KNOWN_CONDITIONS)) expect(condition_supported({ rule_code: code, check_condition: sentence })).toEqual([true, ""]);
+    for (const [code, [sentence]] of Object.entries(KNOWN_CONDITIONS)) expect(condition_supported({ rule_code: code, check_condition: sentence }, 2026)).toEqual([true, ""]);
   });
 });
 
@@ -152,7 +152,7 @@ describe("교차 검증과 최종 결과", () => {
   it("등급을 올리고 모순된 충족 항목을 제거한다", () => {
     const engine = evaluate(sample(3), criteria()), agent = review();
     const result = final_view(agent, engine, "safe", cross_check("safe", agent.matched_rules, engine));
-    expect(result.level).toBe("risky"); expect(result.summary).toContain("올렸습니다"); expect(result.confirmed_items).not.toContain("불리한 특약 없음"); expect(result.recommendations.some(r => r.includes("삭제"))).toBe(true);
+    expect(result.level).toBe("risky"); expect(result.summary).toContain("평가 에이전트는 '안심'"); expect(result.summary).not.toContain("모든 규칙을 충족합니다"); expect(result.agent_summary).toBe(agent.summary); expect(result.confirmed_items).not.toContain("불리한 특약 없음"); expect(result.recommendations.some(r => r.includes("삭제"))).toBe(true);
     expect(new Set(result.cards.map(c => c.rule_code))).toEqual(new Set(engine.hit_codes)); expect(result.cards.every(c => c.source === "engine")).toBe(true);
   });
   it("에이전트만 지적한 규칙을 표시한다", () => {
@@ -171,5 +171,172 @@ describe("교차 검증과 최종 결과", () => {
     const demo = final_view(engine_review(engine), engine, null, cross_check(null, [], engine)); expect(demo.recommendations.length).toBeGreaterThan(0); expect(demo.requests).toEqual([]);
     const agent = review({ review_level: "risky", recommendations: ["사장님, 위약금 조항을 빼 주실 수 있을까요?"] });
     expect(final_view(agent, engine, "risky", cross_check("risky", agent.matched_rules, engine)).requests).toEqual(agent.recommendations);
+  });
+});
+
+const withCondition = (code: string, transform: (value: string) => string) => {
+  const c = criteria();
+  const rule = rules(c).find(r => r.rule_code === code)!;
+  rule.check_condition = transform(String(rule.check_condition));
+  return c;
+};
+
+describe("최신 원본 2차 회귀", () => {
+  it.each([
+    ["LABOR_WEEKLY_HOLIDAY", "15시간 이상인데", "15시간 초과인데"],
+    ["LABOR_MIN_WAGE", "최저임금보다 낮다", "최저임금보다 높다"],
+    ["LABOR_SIGN_COPY", "없거나", "없고"],
+    ["LABOR_MIN_WAGE_NEXT", "2027년 1월 1일", "2027년 7월 1일"],
+    ["LABOR_BREAK", "휴게 30분 이상, 8시간 이상이면 휴게 1시간", "휴게 1분 이상, 8시간 이상이면 휴게 30시간"],
+  ])("의미가 바뀐 조건을 보류한다: %s", (code, old, next) => {
+    expect(evaluate(sample(3), withCondition(code, text => text.replaceAll(old, next))).undetermined_codes).toContain(code);
+  });
+  it("금액만 바뀐 최저임금 조건을 지원한다", () => {
+    const c = withCondition("LABOR_MIN_WAGE", text => text.replace("10,320", "10,500")); c.min_wage_hourly = [10500];
+    expect(evaluate(sample(), c).undetermined_codes).not.toContain("LABOR_MIN_WAGE");
+  });
+  it("최종 등급이 확정 카드보다 낮지 않다", () => {
+    const engine = evaluate({ ...sample(), special_terms: ["퇴사시 마지막 임금을 지급한다."], is_signed: [false] }, criteria());
+    expect(engine.level).toBeNull(); expect(engine.min_level).toBe("check_needed");
+    const result = final_view(review(), engine, "safe", cross_check("safe", [], engine));
+    expect(result.level).toBe("check_needed"); expect(result.incomplete).toBe(false);
+  });
+  it("에이전트 자체 규칙보다 낮은 등급을 올린다", () => {
+    const engine = evaluate(sample(), criteria()), agent = review({ matched_rules: ["LABOR_PENALTY - 근로기준법 제20조"] });
+    const result = final_view(agent, engine, "safe", cross_check("safe", agent.matched_rules, engine));
+    expect(result.level).toBe("risky"); expect(result.disagree).toBe(true);
+  });
+  it("에이전트 없이 보류 규칙이 있으면 최소 등급을 표시한다", () => {
+    const engine = evaluate({ ...sample(), special_terms: ["퇴사시 마지막 임금을 지급한다."], is_signed: [false] }, criteria());
+    const result = final_view(engine_review(engine), engine, null, cross_check(null, [], engine));
+    expect(result.level).toBe("check_needed"); expect(result.incomplete).toBe(true); expect(result.summary).toContain("최소 '확인 필요'");
+  });
+  it("원문에서 빠진 규칙은 기준서 문제다", () => {
+    const c = criteria(), codes = new Set(rules(c).map(rule => String(rule.rule_code)));
+    c.check_rules = rules(c).filter(rule => rule.rule_code !== "LABOR_MIN_WAGE");
+    expect(criteria_problems(c, codes).some(p => p.includes("빠진 규칙"))).toBe(true);
+    expect(evaluate({ ...sample(), wage_amount: [9500], contract_end_date: ["2026-12-31"] }, c, null, codes).level).toBeNull();
+  });
+  it("중복 규칙 코드는 기준서 문제다", () => {
+    const c = criteria(); rules(c).push({ ...rules(c)[0] });
+    expect(criteria_problems(c).some(p => p.includes("중복"))).toBe(true);
+  });
+  it.each([["annual_leave_clause", "해당 없음"], ["annual_leave_clause", "없음"], ["wage_payment_method", "미정"], ["job_description", "추후 결정"]])("없음과 미정은 누락이다: %s %s", (field, value) => {
+    expect(evaluate({ ...sample(), [field]: [value] }, criteria()).hit_codes).toContain("LABOR_REQUIRED_TERMS");
+  });
+  it("해당 없음의 판정에는 주 근로시간이 필요하다", () => {
+    expect(evaluate({ ...sample(4), work_days: [""] }, criteria()).undetermined_codes).toContain("LABOR_REQUIRED_TERMS");
+  });
+  it.each([
+    ["2026-12-10", "휴게 없음 (근로자가 명시적으로 휴게 미사용을 요청함)", false],
+    ["2026-11-01", "휴게 없음 (근로자가 명시적으로 휴게 미사용을 요청함)", true],
+    ["2026-12-10", "없음", true],
+  ])("4시간 휴게 예외: %s %s", (start, breakText, hit) => {
+    const engine = evaluate({ ...sample(), contract_start_date: [start], work_start_time: ["09:00"], work_end_time: ["13:00"], break_time: [breakText] }, criteria());
+    expect(engine.findings.find(f => f.rule_code === "LABOR_BREAK")?.hit).toBe(hit);
+  });
+  it("사업주가 지급하는 배상금을 불리한 조항으로 확정하지 않는다", () => {
+    expect(evaluate({ ...sample(), special_terms: ["회사가 근로자에게 손해배상금을 지급한다."] }, criteria()).hit_codes).not.toContain("LABOR_PENALTY");
+  });
+  it.each(["계약서를 근로자에게 교부할 의무는 없다.", "계약서를 근로자에게 교부는 하지 않는다."])("교부 부정 문구: %s", clause => {
+    expect(evaluate({ ...sample(), copy_delivery_clause: [clause] }, criteria()).hit_codes).toContain("LABOR_SIGN_COPY");
+  });
+  it("휴게가 근무 구간보다 길면 계산하지 않는다", () => {
+    const facts = compute_facts({ ...sample(), work_start_time: ["09:00"], work_end_time: ["10:00"], break_time: ["2시간"] }, criteria());
+    expect(facts.daily_work_hours).toBeNull(); expect(facts.notes.some(n => n.includes("휴게시간이"))).toBe(true);
+  });
+  it("여러 근무 구간을 합치지 않는다", () => {
+    expect(compute_facts({ ...sample(), work_start_time: ["09:00", "18:00"], work_end_time: ["13:00", "22:00"], break_time: ["없음"] }, criteria()).daily_work_hours).toBeNull();
+  });
+  it("요약에서도 연도가 다른 다음 해 임금을 제외한다", () => {
+    const c = criteria(); c.criteria_version = ["v3.0 (법령 기준일 2027-10-01)"];
+    expect(summarize_criteria(c)).toMatchObject({ min_wage_next: null, min_wage_next_dropped: true });
+  });
+  it("숫자 내부 줄바꿈을 허용한다", () => {
+    expect(evaluate(sample(), withCondition("LABOR_REQUIRED_TERMS", text => text.replace("15시간 미만", "1\n5시간 미만"))).undetermined_codes).not.toContain("LABOR_REQUIRED_TERMS");
+  });
+});
+
+describe("최신 원본 3차 회귀", () => {
+  it("계산 보류는 부분 교차 검증이다", () => {
+    const c = criteria(); for (const rule of rules(c)) rule.check_condition = "점검 조건: " + rule.check_condition;
+    const engine = evaluate(sample(), c), check = cross_check("safe", [], engine);
+    expect(engine.level).toBeNull(); expect(check.status).toBe("partial");
+    expect(final_view(review(), engine, "safe", check)).toMatchObject({ level: "safe", incomplete: false });
+  });
+  it("등급만 달라도 불일치다", () => {
+    expect(cross_check("risky", [], evaluate(sample(), criteria())).status).toBe("mismatch");
+  });
+  it("요약은 항상 다시 작성한다", () => {
+    const engine = evaluate(sample(3), criteria());
+    const agent = review({ review_level: "risky", summary: "모든 규칙을 충족합니다.", matched_rules: engine.hit_codes.map(code => `${code} - x`) });
+    const result = final_view(agent, engine, "risky", cross_check("risky", agent.matched_rules, engine));
+    expect(result.summary).not.toContain("모든 규칙을 충족합니다"); expect(result.agent_summary).toBe(agent.summary);
+  });
+  it.each([["annual_leave_clause", "연차유급휴가는 근로기준법에 따라 부여하며 사용일은 협의하여 정한다."], ["weekly_holiday", "매주 일요일 (변경 없음)"]])("정상 설명 문장을 누락으로 보지 않는다: %s", (field, value) => {
+    expect(evaluate({ ...sample(), [field]: [value] }, criteria()).level).toBe("safe");
+  });
+  it("모호한 연차 문장을 보류한다", () => {
+    expect(evaluate({ ...sample(), annual_leave_clause: ["연차유급휴가는 회사 사정에 따라 협의한다."] }, criteria()).undetermined_codes).toContain("LABOR_REQUIRED_TERMS");
+  });
+  it("교부와 무관한 부정을 구분한다", () => {
+    expect(evaluate({ ...sample(), copy_delivery_clause: ["근로자의 교부 요구와 관계없이 계약서 1부를 근로자에게 교부한다."] }, criteria()).level).toBe("safe");
+  });
+  it("세금과 보험료 공제를 정상으로 본다", () => {
+    const result = evaluate({ ...sample(), special_terms: ["소득세와 4대 보험료를 임금에서 공제한다."] }, criteria());
+    expect([...result.hit_codes, ...result.undetermined_codes]).not.toContain("LABOR_PENALTY");
+  });
+  it.each(["휴게 없음 (근로자가 휴게 미사용을 요청하지 않음)", "휴게 없음 (사용자가 휴게 미사용을 요청함)"])("휴게 예외에는 근로자의 긍정 요청이 필요하다: %s", breakText => {
+    const engine = evaluate({ ...sample(), contract_start_date: ["2026-12-10"], work_start_time: ["09:00"], work_end_time: ["13:00"], break_time: [breakText] }, criteria());
+    expect(engine.findings.find(f => f.rule_code === "LABOR_BREAK")?.hit).toBe(true);
+  });
+  it.each([["2026년", "2026\n년"], ["2027년", "2027\n년"], ["10,320", "1\n0,320"]])("연도와 금액 내부 줄바꿈: %s", (old, next) => {
+    expect(evaluate(sample(), withCondition("LABOR_MIN_WAGE", text => text.replaceAll(old, next))).undetermined_codes).not.toContain("LABOR_MIN_WAGE");
+  });
+  it("필드 상태와 교부 상태를 구별한다", () => {
+    expect(["", "없음", "미정", "매주 일요일 (변경 없음)"].map(field_state)).toEqual(["blank", "absent", "undecided", "written"]);
+    expect(copy_clause_status({ copy_delivery_clause: ["계약서 교부"] })).toBe("unclear");
+  });
+  it("빈 코드와 원문에 없는 코드를 검출한다", () => {
+    const c = criteria(); rules(c).push({ rule_code: "", category: "위험" }, { rule_code: "LABOR_EXTRA", category: "위험" });
+    const problems = criteria_problems(c, new Set(Object.keys(KNOWN_CONDITIONS)));
+    expect(problems.some(p => p.includes("비어 있는 행"))).toBe(true); expect(problems.some(p => p.includes("원문에 없는 규칙"))).toBe(true);
+  });
+});
+
+// 원본 pytest 100개와 추가 경계 사례에서 기록한 전체 결과를 비교합니다.
+import * as pythonRules from "../src/lib/rules";
+interface ParityCase { function: string; args: unknown[]; expected: unknown }
+const parity = JSON.parse(readFileSync(new URL("./fixtures/rules-python-parity.json", import.meta.url), "utf8")) as {
+  source_revision: string;
+  recorded_sample3: { cross_status: string; final_level: string; incomplete: boolean };
+  cases: ParityCase[];
+};
+function decodePython(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(decodePython);
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    if (Array.isArray(record.$set)) return new Set(record.$set);
+    if (typeof record.$date === "string") return new Date(`${record.$date}T00:00:00.000Z`);
+    return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, decodePython(item)]));
+  }
+  return value;
+}
+function encodePython(value: unknown): unknown {
+  if (value instanceof Set) return { $set: [...value].sort() };
+  if (value instanceof Date) return { $date: value.toISOString().slice(0, 10) };
+  if (Array.isArray(value)) return value.map(encodePython);
+  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, encodePython(item)]));
+  return value;
+}
+describe("최신 Python 전체 JSON 동등성", () => {
+  it("요청한 원본 커밋과 녹화된 샘플 3을 포함한다", () => {
+    expect(parity.source_revision).toBe("9cef9f429b92e1643c8d3c561dd019c74b5911bb");
+    expect(parity.recorded_sample3).toMatchObject({ cross_status: "mismatch", final_level: "risky", incomplete: false });
+  });
+  it.each(parity.cases.map((test, index) => ({ ...test, index })))("$index: $function", ({ function: name, args, expected }) => {
+    const fn = pythonRules[name as keyof typeof pythonRules] as (...input: unknown[]) => unknown;
+    expect(typeof fn).toBe("function");
+    expect(encodePython(fn(...args.map(decodePython)))).toEqual(expected);
   });
 });

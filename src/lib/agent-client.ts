@@ -1,11 +1,16 @@
-import { as_list, LEVELS, more_severe, normalize_level, text, type ExtractedData, type Level } from "./rules";
+import { as_list, is_blank, LEVELS, more_severe, normalize_level, text, type ExtractedData, type Level } from "./rules";
 
 const BASE_URL = "https://api.upstage.ai/v2";
+const RETRYABLE_ERROR_CODES = ["model_request_error", "server_error", "rate_limit", "timeout", "internal"];
+const REVIEW_FIELDS = ["review_level", "summary", "matched_rules", "missing_items", "risky_clauses", "confirmed_items", "recommendations"];
 
 export class AgentError extends Error {
-  constructor(message: string) {
+  readonly retryable: boolean;
+
+  constructor(message: string, retryable = false) {
     super(message);
     this.name = "AgentError";
+    this.retryable = retryable;
   }
 }
 
@@ -21,6 +26,7 @@ export interface AgentOptions extends UploadOptions {
   name?: string;
   timeout_ms?: number;
   poll_interval_ms?: number;
+  attempts?: number;
 }
 
 function is_record(value: unknown): value is ExtractedData {
@@ -101,13 +107,16 @@ export class AgentClient {
   }
 
   async wait_until_complete(job_id: string): Promise<ExtractedData> {
-    const deadline = performance.now() + (this.options.timeout_ms ?? 180_000);
+    const deadline = performance.now() + (this.options.timeout_ms ?? 420_000);
     while (true) {
       const remaining = deadline - performance.now();
       if (remaining <= 0) throw new AgentError("에이전트 처리 시간이 초과되었습니다.");
       const response = await request(`/responses/${encodeURIComponent(job_id)}?include=last`, { method: "GET" }, this.options, remaining);
       if (response.status === "completed") return response;
-      if (response.status === "failed") throw new AgentError("에이전트 실행에 실패했습니다.");
+      if (response.status === "failed") {
+        const code = is_record(response.error) && typeof response.error.code === "string" ? response.error.code : "";
+        throw new AgentError("에이전트 실행에 실패했습니다.", RETRYABLE_ERROR_CODES.some((word) => code.includes(word)));
+      }
       if (response.status !== "queued" && response.status !== "in_progress") {
         throw new AgentError("에이전트가 결과를 완료하지 못했습니다.");
       }
@@ -138,25 +147,39 @@ export class AgentClient {
   }
 
   async run(file_id: string): Promise<{ result: ExtractedData; raw: ExtractedData }> {
-    const job_id = await this.create_job(file_id);
-    const raw = await this.wait_until_complete(job_id);
-    return { result: this.parse_result(raw), raw };
+    const configured = this.options.attempts ?? 3;
+    const attempts = Number.isFinite(configured) ? Math.min(3, Math.max(1, Math.floor(configured))) : 3;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      const job_id = await this.create_job(file_id);
+      let raw: ExtractedData;
+      try {
+        raw = await this.wait_until_complete(job_id);
+      } catch (error) {
+        if (!(error instanceof AgentError) || !error.retryable || attempt === attempts) throw error;
+        continue;
+      }
+      return { result: this.parse_result(raw), raw };
+    }
+    throw new AgentError("에이전트 실행에 실패했습니다.");
   }
 }
 
 export function find_classification(raw: unknown, labels: readonly string[] = LEVELS): string | null {
-  const preferred = new Set<string>();
-  const anywhere = new Set<string>();
-  function walk(node: unknown, key = ""): void {
-    if (Array.isArray(node)) node.forEach((item) => walk(item, key));
-    else if (is_record(node)) Object.entries(node).forEach(([name, value]) => walk(value, name.toLowerCase()));
+  const candidates = [new Set<string>(), new Set<string>(), new Set<string>(), new Set<string>()];
+  function walk(node: unknown, key = "", in_output = false): void {
+    if (Array.isArray(node)) node.forEach((item) => walk(item, key, in_output));
+    else if (is_record(node)) Object.entries(node).forEach(([name, value]) => {
+      const lower = name.toLowerCase();
+      walk(value, lower, in_output || lower === "output");
+    });
     else if (typeof node === "string" && labels.includes(node)) {
-      (/class|category|label|condition/.test(key) ? preferred : anywhere).add(node);
+      const named = /class|category|label|condition/.test(key);
+      candidates[(in_output ? 0 : 2) + (named ? 0 : 1)].add(node);
     }
   }
   walk(raw);
-  for (const candidates of [preferred, anywhere]) {
-    if (candidates.size) return candidates.size === 1 ? [...candidates][0] : null;
+  for (const group of candidates) {
+    if (group.size) return group.size === 1 ? [...group][0] : null;
   }
   return null;
 }
@@ -175,6 +198,15 @@ export interface NormalizedReview {
 }
 
 export function normalize_review(review: ExtractedData, raw: ExtractedData): NormalizedReview {
+  if (!REVIEW_FIELDS.some((key) => !is_blank(review[key]))) {
+    throw new AgentError("평가 에이전트 결과가 비어 있습니다. Review Agent 설정을 확인해 주세요.");
+  }
+  for (const key of REVIEW_FIELDS) {
+    const value = review[key];
+    if (value != null && typeof value !== "string" && !Array.isArray(value)) {
+      throw new AgentError(`평가 에이전트 결과의 ${key} 형식이 올바르지 않습니다.`);
+    }
+  }
   const schema_level = normalize_level(review.review_level);
   const classify_level = find_classification(raw) as Level | null;
   return {

@@ -1,0 +1,12 @@
+{
+  "sha256": "ce6e12855edb6a856a4e233e242fe90c829af07324fa3edd8b5853a9a2f06277",
+  "codes": [
+    "LABOR_BREAK",
+    "LABOR_MIN_WAGE",
+    "LABOR_MIN_WAGE_NEXT",
+    "LABOR_PENALTY",
+    "LABOR_REQUIRED_TERMS",
+    "LABOR_SIGN_COPY",
+    "LABOR_WEEKLY_HOLIDAY"
+  ]
+}

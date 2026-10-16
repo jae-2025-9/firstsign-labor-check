@@ -9,7 +9,19 @@ import { compute_facts } from "../src/lib/rules";
 
 const font = readFileSync(new URL("../public/fonts/NanumGothic-Regular.ttf", import.meta.url));
 const contract = { employer_name: "검증카페", work_start_time: "09:00", work_end_time: "18:00", break_time: "1시간", work_days: "월~금", wage_type: "시급", wage_amount: 11000, is_signed: false };
-const criteria = { criteria_name: "검증 기준서", criteria_version: "2026-10", min_wage_hourly: 10320, min_wage_hourly_next_year: 10700 };
+const criteria = { criteria_name: "검증 기준서", criteria_version: "2026-10", min_wage_hourly: 10320, min_wage_hourly_2027: 10700 };
+const hasPoppler = spawnSync("pdftotext", ["-v"]).status === 0;
+
+function extract_pdf(bytes: Uint8Array): string {
+  const directory = mkdtempSync(join(tmpdir(), "firstsign-pdf-"));
+  try {
+    const path = join(directory, "review.pdf");
+    writeFileSync(path, bytes);
+    return execFileSync("pdftotext", ["-layout", path, "-"], { encoding: "utf8" });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 describe("review PDF", () => {
   it("preserves absent values and explicit false in contract rows", () => {
@@ -47,4 +59,28 @@ describe("review PDF", () => {
       }
     }
   }, 30_000);
+
+  it("preserves many short lines in the special terms", async () => {
+    const multiline = { ...contract, special_terms: ["조항\n".repeat(60)] };
+    const bytes = await build_review_input(multiline, criteria, compute_facts(multiline, criteria), font);
+    expect((await PDFDocument.load(bytes)).getPageCount()).toBeGreaterThan(1);
+    if (hasPoppler) {
+      const extracted = extract_pdf(bytes);
+      expect(extracted.match(/조항/g)).toHaveLength(60);
+      expect(extracted).toContain("3부. 계산 보조값");
+    }
+  });
+
+  it.skipIf(!hasPoppler).each(["2025-10", "2027-10", ""])("does not reuse the fixed 2027 wage for criteria version %s", async (version) => {
+    const changed = { ...criteria, criteria_version: version };
+    const bytes = await build_review_input(contract, changed, compute_facts(contract, changed), font);
+    const extracted = extract_pdf(bytes);
+    expect(extracted).toContain("최저임금(다음 해년, 시간급): 확정하지 못함");
+    expect(extracted).not.toContain("10,700원");
+  });
+
+  it.skipIf(!hasPoppler)("labels the valid next wage with its explicit year", async () => {
+    const bytes = await build_review_input(contract, criteria, compute_facts(contract, criteria), font);
+    expect(extract_pdf(bytes)).toContain("최저임금(2027년, 시간급): 10,700원");
+  });
 });

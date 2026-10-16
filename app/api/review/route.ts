@@ -1,4 +1,5 @@
 import { env } from 'cloudflare:workers';
+import { review_stream } from '../../../src/lib/review-stream';
 import { run_review_service } from '../../../src/lib/service';
 import { settings, is_live_ready } from '../../../src/lib/settings';
 import { ServiceError, MAX_BYTES } from '../../../src/lib/validation';
@@ -26,22 +27,14 @@ export async function POST(request: Request) {
       input={pdf_bytes:new Uint8Array(await file.arrayBuffer())};
     }
   } catch(error) { return Response.json({error:error instanceof ServiceError ? error.message:'입력 내용을 확인해 주세요.'},{status:400}); }
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream({async start(controller) {
-    let closed=false;
-    const send=(data:unknown)=>{if(!closed)try{controller.enqueue(encoder.encode(JSON.stringify(data)+'\n'));}catch{closed=true;}};
-    const heartbeat=setInterval(()=>send({type:'heartbeat'}),15000);
-    try {
-      const runtime=env as unknown as {BUCKET?:R2Bucket;ASSETS?:{fetch:(request:Request)=>Promise<Response>}};
-      const result=await run_review_service(input,{config,bucket:runtime.BUCKET,progress:(step,message)=>send({type:'progress',step,message}),asset:async path=>{
-        const req=new Request(new URL(path,origin));
-        const response=runtime.ASSETS ? await runtime.ASSETS.fetch(req) : await fetch(req);
-        if(!response.ok)throw new ServiceError('기준서 또는 글꼴 파일을 불러오지 못했습니다.');
-        return new Uint8Array(await response.arrayBuffer());
-      }});
-      send({type:'result',result});
-    } catch(error) { send({type:'error',error:error instanceof Error && (error.name==='AgentError' || error instanceof ServiceError) ? error.message : '점검 중 오류가 발생했습니다. 잠시 뒤 다시 시도해 주세요.'}); }
-    finally {clearInterval(heartbeat);if(!closed)controller.close();}
-  }});
-  return new Response(stream,{headers:{'Content-Type':'application/x-ndjson; charset=utf-8','Cache-Control':'no-store','X-Content-Type-Options':'nosniff'}});
+  const stream=review_stream(async progress=>{
+    const runtime=env as unknown as {BUCKET?:R2Bucket;ASSETS?:{fetch:(request:Request)=>Promise<Response>}};
+    return run_review_service(input,{config,bucket:runtime.BUCKET,progress,asset:async path=>{
+      const req=new Request(new URL(path,origin));
+      const response=runtime.ASSETS?await runtime.ASSETS.fetch(req):await fetch(req);
+      if(!response.ok)throw new ServiceError('기준서 또는 글꼴 파일을 불러오지 못했습니다.');
+      return new Uint8Array(await response.arrayBuffer());
+    }});
+  });
+  return new Response(stream,{headers:{'Content-Type':'application/x-ndjson; charset=utf-8','Cache-Control':'no-store, no-transform','X-Content-Type-Options':'nosniff','X-Accel-Buffering':'no'}});
 }

@@ -73,7 +73,8 @@ export async function build_review_input(
   // 버퍼 끝을 넘지 않도록 메모리 복사본에 0을 붙입니다. 원본 파일은 보존합니다.
   const paddedFont = new Uint8Array(fontBytes.length + 12);
   paddedFont.set(fontBytes);
-  const font = await document.embedFont(paddedFont, { subset: true });
+  // 부분 임베딩은 일부 Nanum 복합 글리프의 윤곽을 누락하므로 전체 폰트를 넣습니다.
+  const font = await document.embedFont(paddedFont, { subset: false });
   document.setTitle("점검 입력 문서");
   document.setAuthor("FirstSign");
   const pageWidth = 595.28;
@@ -116,7 +117,7 @@ export async function build_review_input(
     `적용 버전: ${summary.version || EMPTY}`,
     `필수 기재사항: ${summary.required_items.join(", ") || EMPTY}`,
     `최저임금(${year || "기준"}년, 시간급): ${won(summary.min_wage_current)}`,
-    `최저임금(${year ? year + 1 : "다음"}년, 시간급): ${won(summary.min_wage_next)}`,
+    `최저임금(${summary.min_wage_next_year || "다음 해"}년, 시간급): ${summary.min_wage_next !== null ? won(summary.min_wage_next) : "확정하지 못함"}`,
     `인용 법령: ${summary.legal_basis.join(", ") || EMPTY}`,
   ]) paragraph(line);
   heading(`점검 규칙 (${summary.rules.length}개)`);
