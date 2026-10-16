@@ -1,7 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import type { ReviewResult } from '../src/lib/service';
-import {CrossCheckNotice,IncompleteNotice,DisputedNotice,CriteriaRepairNotice,SOURCE_NOTES} from '../src/components/ReviewStatus';
+import {CrossCheckNotice,IncompleteNotice,DisputedNotice,CriteriaRepairNotice,RequestsMissingNotice,SOURCE_NOTES} from '../src/components/ReviewStatus';
 const labels:Record<string,string>={safe:'안심',check_needed:'확인 필요',risky:'위험'};
 const sampleNames=['성실카페 (정상)','한빛분식 (필수 항목 누락)','스피드편의점 (위약금·최저임금 미달)','푸른서점 (주 15시간 미만)'];
 const sourceNames:Record<string,string>={both:'평가 에이전트 · 규칙 계산 모두 지적',agent:'평가 에이전트만 지적',engine:'규칙 계산만 지적'};
@@ -14,9 +15,9 @@ export default function Home(){
   const [live,setLive]=useState<boolean|null>(null),[mode,setMode]=useState('sample'),[sample,setSample]=useState('1'),[file,setFile]=useState<File|null>(null);
   const [result,setResult]=useState<ReviewResult|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[steps,setSteps]=useState<{step:number;message:string}[]>([]),[copied,setCopied]=useState(false);
   useEffect(()=>{fetch('/api/config').then(r=>{if(!r.ok)throw Error();return r.json() as Promise<{live:boolean}>;}).then(d=>setLive(d.live)).catch(()=>{setLive(false);setError('연결 상태를 확인하지 못했습니다. 샘플로 체험해 주세요.');});},[]);
-  useEffect(()=>{if(!busy)return;const start=Date.now();setElapsed(0);const timer=setInterval(()=>setElapsed(Math.floor((Date.now()-start)/1000)),1000);return ()=>clearInterval(timer);},[busy]);
+  useEffect(()=>{if(!busy)return;const start=Date.now();const timer=setInterval(()=>setElapsed(Math.floor((Date.now()-start)/1000)),1000);return ()=>clearInterval(timer);},[busy]);
   function reset(){setResult(null);setError('');setSteps([]);setCopied(false);}
-  async function run(){reset();setBusy(true);try{
+  async function run(){reset();setElapsed(0);setBusy(true);try{
     let response:Response;
     if(mode==='sample')response=await fetch('/api/review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sample_id:sample})});
     else {if(!file)throw Error('근로계약서 PDF를 선택해 주세요.');const form=new FormData();form.append('file',file);response=await fetch('/api/review',{method:'POST',body:form});}
@@ -31,7 +32,7 @@ export default function Home(){
   }catch(e){setError(e instanceof Error?e.message:'점검하지 못했습니다.');}finally{setBusy(false);}}
   const final=result?.final, facts=result?.facts;
   const message=final?.requests.length?`사장님, 근로계약서 관련해서 몇 가지 확인 부탁드립니다.\n\n${final.requests.map((s,i)=>`${i+1}. ${s}`).join('\n')}\n\n확인 후 수정된 계약서를 받을 수 있을까요? 감사합니다.`:'';
-  return <><nav><a href="/" className="brand"><span className="brand-mark" aria-hidden="true">✓</span>첫사인</a><span>알바의 첫 계약, 차근차근</span><a href="/data/criteria_v2_2026-10.pdf" target="_blank" rel="noreferrer">점검 기준서 보기 ↗</a></nav>
+  return <><nav><Link href="/" className="brand"><span className="brand-mark" aria-hidden="true">✓</span>첫사인</Link><span>알바의 첫 계약, 차근차근</span><a href="/data/criteria_v2_2026-10.pdf" target="_blank" rel="noreferrer">점검 기준서 보기 ↗</a></nav>
   <main><header className="hero"><div className="eyebrow">FIRSTSIGN · DOCUMENT CHECK</div><h1>사인하기 전에,<br/><span>한 번 더 확인하세요.</span></h1><p className="intro">첫사인 · 알바 안심 체크</p><p>근로계약서의 빠진 항목과 불리한 조항을<br className="desktop"/> 점검 기준서에 따라 짚어 드립니다.</p><div className="tags"><span>Upstage Studio 에이전트 3개</span><span>기준서 v2 · 규칙 7개</span><span>지적 항목별 법령 근거</span></div></header>
   <p className="disclaimer">참고용이며 법률 자문이 아닙니다. 중요한 계약은 노무사나 고용노동부 상담(국번 없이 1350)으로 확인하세요.</p>
   {live===false&&<aside className="notice blue"><strong>데모: 규칙 계산 결과 (평가 에이전트 미연결)</strong><p>체험용 샘플 4종을 점검할 수 있습니다. 저장된 실제 결과가 있는 샘플은 해당 실행 결과를 재생합니다. 내 계약서 업로드는 실연결 모드에서 사용할 수 있습니다.</p></aside>}
@@ -50,7 +51,7 @@ export default function Home(){
   {final.pending.length>0&&<div className="notice slate"><strong>판단 보류 ({final.pending.length}건)</strong><List items={final.pending.map(f=>`${f.title}: ${f.reason}`)}/></div>}
   <DisputedNotice disputed={final.disputed}/>
   {result.source!=='rules'&&!!result.review?.risky_clauses.length&&<details><summary>평가 에이전트가 지적한 조항 원문</summary><List items={result.review.risky_clauses}/></details>}</section>
-  <section><div className="section-title"><span className="number">03</span><h2>다음에 할 일</h2></div>{final.recommendations.length?<List items={final.recommendations}/>:<p>{final.level==='safe'?'따로 요청할 내용이 없습니다. 서명한 계약서 사본 1부를 꼭 받아 두세요.':'판단 보류 항목을 원문으로 확인하고, 애매하면 고용노동부 상담(1350)에 물어보세요.'}</p>}{message&&<div className="message"><div className="card-head"><strong>사장님께 보낼 메시지 초안</strong><button onClick={async()=>{try{await navigator.clipboard.writeText(message);setCopied(true);}catch{setCopied(false);}}}>{copied?'복사됨':'복사'}</button></div><p className="subtle">{result.source==='rules'?'규칙 계산 결과로 구성한 초안':'최종 점검 결과로 구성한 초안'} · 내용을 확인한 뒤 직접 보내세요.</p><pre>{message}</pre></div>}</section></>}
+  <section><div className="section-title"><span className="number">03</span><h2>다음에 할 일</h2></div>{final.recommendations.length?<List items={final.recommendations}/>:<p>{final.level==='safe'?'따로 요청할 내용이 없습니다. 서명한 계약서 사본 1부를 꼭 받아 두세요.':'판단 보류 항목을 원문으로 확인하고, 애매하면 고용노동부 상담(1350)에 물어보세요.'}</p>}{message&&<div className="message"><div className="card-head"><strong>사장님께 보낼 메시지 초안</strong><button onClick={async()=>{try{await navigator.clipboard.writeText(message);setCopied(true);}catch{setCopied(false);}}}>{copied?'복사됨':'복사'}</button></div><p className="subtle">{result.source==='rules'?'규칙 계산 결과로 구성한 초안':'최종 점검 결과로 구성한 초안'} · 내용을 확인한 뒤 직접 보내세요.</p><pre>{message}</pre><RequestsMissingNotice titles={final.requests_missing}/></div>}</section></>}
   <section><div className="section-title"><span className="number">04</span><h2>상세 보기</h2></div><details><summary>추출된 계약 정보 {result.source==='rules'?'(샘플 예상값)':result.source==='recorded'?'(저장된 실행 결과)':'(Contract Agent)'}</summary><table><tbody>{result.contract_rows.map(([label,value])=><tr key={label}><th>{label}</th><td>{value}</td></tr>)}</tbody></table></details><details><summary>계산 보조값과 기준서 (평가 입력 문서 2·3부)</summary><p>{result.engine.criteria.name} ({result.engine.criteria.version})</p><p>최저임금: {result.engine.criteria.base_year}년 {money(result.engine.criteria.min_wage_current)}, {result.engine.criteria.min_wage_next_year??'다음 해'}년 {result.engine.criteria.min_wage_next===null?'확정하지 못함':money(result.engine.criteria.min_wage_next)}</p><p>1일 근로시간: {facts!.daily_work_hours??'계산 불가'}시간 · 주 {facts!.work_days_per_week??'계산 불가'}일</p><p>시급 환산: {money(facts!.hourly_wage)} ({facts!.hourly_basis})</p><p>적용 최저임금: {facts!.applicable_min_wage_year??'연도 미상'}년 {money(facts!.applicable_min_wage)}</p><List items={[...facts!.notes,...result.engine.criteria_problems]}/><CriteriaRepairNotice codes={result.criteria_repaired}/></details>{final?.agent_summary&&final.agent_summary!==final.summary&&<details><summary>평가 에이전트 원문 요약</summary><p>{final.agent_summary}</p></details>}{!!final?.confirmed_items.length&&<details><summary>기준을 충족한 항목</summary><List items={final.confirmed_items}/></details>}
   <div className="downloads"><button onClick={()=>{const {review_pdf_base64,...exported}=result;void review_pdf_base64;download(new Blob([JSON.stringify(exported,null,2)],{type:'application/json'}),'review_result.json');}}>결과 JSON 내려받기 ↓</button>{result.review_pdf_base64&&<button onClick={()=>download(new Blob([Uint8Array.from(atob(result.review_pdf_base64!),c=>c.charCodeAt(0))],{type:'application/pdf'}),'Review_Input.pdf')}>평가 입력 PDF 내려받기 ↓</button>}</div></section></div>}
   <footer className="limits"><strong>점검 범위와 한계</strong><p>5인 미만 사업장 여부, 만 18세 미만 근로자, 수습 기간 감액은 점검하지 않습니다. 기준서는 법령 기준일 2026-10-14 기준입니다. AI의 판단과 문서 추출은 틀릴 수 있습니다.</p><p>첫사인 · 고려대 세종 Document Agent 해커톤 출품작</p></footer></main></>;

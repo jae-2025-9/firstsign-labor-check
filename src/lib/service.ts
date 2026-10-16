@@ -1,7 +1,7 @@
 import { apply_source_table, compute_facts, evaluate, engine_review, cross_check, final_view, criteria_problems, looks_like_contract, type ExtractedData } from './rules';
 import { build_review_input, contract_rows } from './review-builder';
 import { AgentClient, normalize_review } from './agent-client';
-import { is_live_ready, type Settings } from './settings';
+import { is_live_ready, SECRET_NAMES, type Settings } from './settings';
 import { ServiceError, validate_pdf } from './validation';
 import { demo_inputs, sample_ids } from './demo-inputs';
 import { criteria_source_codes, criteria_source_table, sha256 } from './criteria-source';
@@ -12,7 +12,7 @@ export async function criteria_cache_key(pdf: Uint8Array, config: Settings) {
  return 'criteria/' + await sha256(new TextEncoder().encode(JSON.stringify([await sha256(pdf), config.CRITERIA_AGENT_ID, config.CRITERIA_CONFIG_ID]))) + '.json';
 }
 async function extract(bytes: Uint8Array, role: 'CONTRACT'|'CRITERIA'|'REVIEW', ctx: ServiceContext) {
- const client = new AgentClient({api_key:ctx.config.UPSTAGE_API_KEY,agent_id:ctx.config[`${role}_AGENT_ID`],config_id:ctx.config[`${role}_CONFIG_ID`],name:role,fetch:ctx.fetch});
+ const client = new AgentClient({api_key:ctx.config.UPSTAGE_API_KEY,agent_id:ctx.config[`${role}_AGENT_ID`],config_id:ctx.config[`${role}_CONFIG_ID`],name:role,fetch:ctx.fetch,diagnostic_secrets:SECRET_NAMES.map(key=>ctx.config[key])});
  const file = await client.upload_file(new Blob([bytes as BlobPart],{type:'application/pdf'}), `${role.toLowerCase()}.pdf`);
  return client.run(file);
 }

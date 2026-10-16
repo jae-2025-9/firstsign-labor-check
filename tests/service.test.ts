@@ -4,7 +4,7 @@ import {PDFDocument} from 'pdf-lib';
 import {run_review_service,criteria_cache_key} from '../src/lib/service';
 import {settings,is_live_ready,SECRET_NAMES} from '../src/lib/settings';
 import {validate_pdf,MAX_BYTES} from '../src/lib/validation';
-import oracle from './fixtures/service-python-561d8bc.json';
+import oracle from './fixtures/service-python-81d83d0.json';
 const config=settings({});
 const asset=async(path:string)=>new Uint8Array(await readFile(`public${path}`));
 describe('service boundary',()=>{
@@ -44,13 +44,13 @@ describe('live service assembly with mocked Upstage',()=>{
 });
 
 
-describe('pinned Python service replay parity (561d8bc)',()=>{
+describe('pinned Python service replay parity (81d83d0)',()=>{
  it.each(['1','2','3','4'])('sample %s matches the original final result and cross-check',async sample_id=>{
   const forced=settings({...Object.fromEntries(SECRET_NAMES.map(k=>[k,'test'])),FORCE_DEMO:'1'});
   const r=await run_review_service({sample_id},{config:forced,asset,fetch:async()=>{throw Error('Unexpected network');}});
   expect(r.mode).toBe('demo');expect(r.source).toBe('recorded');
   const final=r.final!;
-  expect({final_level:r.final_level,cards:final.cards.map(({rule_code,source})=>({rule_code,source})),disputed:final.disputed,pending:final.pending,summary:final.summary,requests:final.requests,recommendations:final.recommendations,cross_check:r.cross_check,criteria_repaired:r.criteria_repaired}).toEqual(oracle.samples[sample_id as keyof typeof oracle.samples]);
+  expect({final_level:r.final_level,cards:final.cards.map(({rule_code,source})=>({rule_code,source})),disputed:final.disputed,pending:final.pending,summary:final.summary,requests:final.requests,requests_missing:final.requests_missing,recommendations:final.recommendations,cross_check:r.cross_check,criteria_repaired:r.criteria_repaired}).toEqual(oracle.samples[sample_id as keyof typeof oracle.samples]);
   expect(r.disputed_rule_codes).toEqual(final.disputed.map(card=>card.rule_code));
   expect(r.criteria_repaired).toEqual(['LABOR_MIN_WAGE_NEXT']);
   expect(final.recommendations.every(action=>!action.trimEnd().endsWith('10,700'))).toBe(true);

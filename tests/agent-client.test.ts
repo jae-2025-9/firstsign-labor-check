@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentClient, AgentError, find_classification, normalize_review, upload_file } from "../src/lib/agent-client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgentClient, AgentError, find_classification, normalize_review, upload_file, sanitize_diagnostic } from "../src/lib/agent-client";
 
 const options = { api_key: "test-key", agent_id: "test-agent", config_id: "1", poll_interval_ms: 1 };
 const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
 
-afterEach(() => vi.useRealTimers());
+beforeEach(()=>vi.spyOn(console,"error").mockImplementation(()=>{}));
+afterEach(() => {vi.useRealTimers();vi.restoreAllMocks();});
 
 describe("Upstage client", () => {
   it("uploads a file with the required multipart purpose", async () => {
@@ -108,7 +109,7 @@ describe("Upstage client", () => {
       ? response({ id: `job-${++jobs}` })
       : response({ status: "failed", error: { code: "model_request_error", message: "private-document-value" } }));
     const pending = new AgentClient({ ...options, fetch: fetcher, attempts: 10 }).run("file-test");
-    await expect(pending).rejects.toMatchObject({ name: "AgentError", retryable: true, message: "에이전트 실행에 실패했습니다." });
+    await expect(pending).rejects.toMatchObject({ name: "AgentError", retryable: true, message: expect.stringContaining("Job 시도 3/3, 재시도 2회") });
     expect(jobs).toBe(3);
   });
 
@@ -183,4 +184,23 @@ describe("review classification", () => {
     expect(normalize_review({ review_level: ["check_needed"] }, {})).toMatchObject({ review_level: "check_needed", level_conflict: false, summary: "" });
     expect(normalize_review({ review_level: "safe" }, {})).toMatchObject({ review_level: "safe", matched_rules: [] });
   });
+});
+
+
+describe('Studio failure diagnostics',()=>{
+ it('reports the final code, message and retry count without runtime secrets or job IDs',async()=>{
+  const secrets=['api-private','agent-private','config-private','other-agent-private'];let jobs=0;
+  const fetcher=vi.fn<typeof fetch>().mockImplementation(async(_url,init)=>init?.method==='POST'?response({id:`private-job-${++jobs}`}):response({status:'failed',error:{code:'model_request_error',message:`Model failed: ${secrets.join(' ')} https://example.test/?token=private`}}));
+  const pending=new AgentClient({api_key:secrets[0],agent_id:secrets[1],config_id:secrets[2],diagnostic_secrets:secrets,name:'REVIEW',fetch:fetcher}).run('file-private');
+  let message='';try{await pending;}catch(e){message=(e as Error).message;}
+  expect(message).toContain('model_request_error');expect(message).toContain('Model failed:');expect(message).toContain('Job 시도 3/3, 재시도 2회');
+  const logs=vi.mocked(console.error).mock.calls.map(args=>JSON.parse(String(args[0])));
+  expect(logs.map(x=>[x.attempt,x.retries,x.retry_scheduled])).toEqual([[1,0,true],[2,1,true],[3,2,false]]);
+  expect(logs.every(x=>x.role==='REVIEW')).toBe(true);
+  const exposed=JSON.stringify(logs)+message;for(const value of [...secrets,'private-job','file-private','token=private'])expect(exposed).not.toContain(value);
+ });
+ it('bounds diagnostic text and removes credentials and control characters',()=>{
+  const clean=sanitize_diagnostic('Bearer abc123 sk-secret abc\n'+ 'x'.repeat(9000),[]);
+  expect(clean.length).toBeLessThanOrEqual(500);expect(clean).not.toContain('abc123');expect(clean).not.toContain('sk-secret');expect(clean).not.toContain('\n');
+ });
 });

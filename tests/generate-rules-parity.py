@@ -6,16 +6,35 @@ import hashlib
 import importlib
 import inspect
 import json
+import os
+import socket
+import tempfile
 from pathlib import Path
 import subprocess
 import sys
 
 SITE = Path(__file__).resolve().parents[1]
-SOURCE = SITE / "outputs/qa/upstream-561d8bc"
+SOURCE = SITE / "outputs/qa/upstream-81d83d0"
 REPOSITORY = SITE.parent / "firstsign-labor-check"
-REVISION = subprocess.check_output(["git", "-C", str(REPOSITORY), "rev-parse", "561d8bc"], text=True).strip()
+REVISION = subprocess.check_output(["git", "-C", str(REPOSITORY), "rev-parse", "81d83d0"], text=True).strip()
 for name in ("rules.py", "tests/test_rules.py"):
     assert (SOURCE / name).read_bytes() == subprocess.check_output(["git", "-C", str(REPOSITORY), "show", f"{REVISION}:{name}"])
+# 파일 환경설정과 네트워크를 차단하고 저장된 응답만 재생한다.
+os.environ["FORCE_DEMO"] = "1"
+os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+sys.dont_write_bytecode = True
+for key in ("UPSTAGE_API_KEY", "CONTRACT_AGENT_ID", "CONTRACT_CONFIG_ID", "CRITERIA_AGENT_ID", "CRITERIA_CONFIG_ID", "REVIEW_AGENT_ID", "REVIEW_CONFIG_ID"):
+    os.environ[key] = ""
+import dotenv
+dotenv.load_dotenv = lambda *args, **kwargs: False
+dotenv.find_dotenv = lambda *args, **kwargs: ""
+
+def deny_network(*args, **kwargs):
+    raise AssertionError("Network is blocked during oracle generation")
+
+socket.socket.connect = deny_network
+socket.socket.connect_ex = deny_network
+socket.create_connection = deny_network
 sys.path.insert(0, str(SOURCE))
 rules = importlib.import_module("rules")
 pytest = importlib.import_module("pytest")
@@ -137,3 +156,27 @@ output = SITE / "tests/fixtures/rules-python-parity.json"
 output.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 print(f"Captured {len(payload['cases'])} Python cases to {output}")
 print(json.dumps(payload["recorded_sample3"], ensure_ascii=False))
+
+# 원본의 회귀 입력 목록도 같은 커밋에서 갱신한다.
+regressions = importlib.import_module("test_rules")
+(SITE / "tests/fixtures/rules-edge-inputs.json").write_text(json.dumps({"AMBIGUOUS_INPUTS": regressions.AMBIGUOUS_INPUTS, "NORMAL_INPUTS": regressions.NORMAL_INPUTS}, ensure_ascii=False, indent=2) + "\n")
+
+# 서비스 전체 흐름은 임시 폴더에서 재생한다. 원본 출력 폴더는 쓰지 않는다.
+service = importlib.import_module("service")
+assert not service.is_live_ready()
+samples = {}
+with tempfile.TemporaryDirectory(prefix="firstsign-service-oracle-") as temporary:
+    service.new_run_dir = lambda: Path(tempfile.mkdtemp(dir=temporary))
+    for sample_id in ("1", "2", "3", "4"):
+        result = service.run_review_service(sample_id=sample_id)
+        assert result["mode"] == "demo" and result["source"] == "recorded"
+        final = result["final"]
+        samples[sample_id] = {
+            "final_level": result["final_level"],
+            "cards": [{"rule_code": card["rule_code"], "source": card["source"]} for card in final["cards"]],
+            **{key: final[key] for key in ("disputed", "pending", "summary", "requests", "requests_missing", "recommendations")},
+            "cross_check": result["cross_check"], "criteria_repaired": result["criteria_repaired"],
+        }
+service_oracle = {"source_commit": REVISION, "criteria_sha256": hashlib.sha256(service.CRITERIA_FILE.read_bytes()).hexdigest(), "samples": samples}
+(SITE / "tests/fixtures/service-python-81d83d0.json").write_text(json.dumps(service_oracle, ensure_ascii=False, indent=2) + "\n")
+print("Captured 4 Python service sample results with network blocked")

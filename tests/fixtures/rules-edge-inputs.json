@@ -95,6 +95,42 @@
         "copy_delivery_clause": "근로자에게 계약서를 교부한다는 규정은 없다."
       },
       "LABOR_SIGN_COPY"
+    ],
+    [
+      {
+        "work_end_time": "18:00",
+        "break_time": "12:00~13:00 (금요일은 12:00~12:15)"
+      },
+      "LABOR_BREAK"
+    ],
+    [
+      {
+        "work_end_time": "18:00",
+        "break_time": "12:00~13:00 (또는 12:00~12:30)"
+      },
+      "LABOR_BREAK"
+    ],
+    [
+      {
+        "wage_amount": 10500,
+        "contract_end_date": "2026-12-31 (연장하지 않을 경우)"
+      },
+      "LABOR_MIN_WAGE_NEXT"
+    ],
+    [
+      {
+        "wage_amount": 10500,
+        "contract_end_date": "2026-12-31 또는 기간의 정함 없음"
+      },
+      "LABOR_MIN_WAGE_NEXT"
+    ],
+    [
+      {
+        "contract_start_date": "2026-12-10 또는 2026년 11월",
+        "work_end_time": "13:00",
+        "break_time": "없음 (근로자가 휴게 미사용을 명시적으로 요청함)"
+      },
+      "LABOR_BREAK"
     ]
   ],
   "NORMAL_INPUTS": [
@@ -163,6 +199,31 @@
         ]
       },
       "LABOR_SIGN_COPY"
+    ],
+    [
+      {
+        "wage_amount": "2026-10-01 기준 10,800원"
+      },
+      "LABOR_MIN_WAGE"
+    ],
+    [
+      {
+        "wage_amount": "10.8천원"
+      },
+      "LABOR_MIN_WAGE"
+    ],
+    [
+      {
+        "wage_amount": 10500,
+        "contract_end_date": "2026-12-31 (자동 갱신 없음)"
+      },
+      "LABOR_MIN_WAGE_NEXT"
+    ],
+    [
+      {
+        "break_time": "12:00 ~ 12:30 (30분)"
+      },
+      "LABOR_BREAK"
     ]
   ]
 }

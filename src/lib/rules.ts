@@ -101,7 +101,8 @@ export const SOURCE_FIELDS = ["check_condition", "legal_basis", "recommended_act
 export type SourceTable = Record<string, Partial<Record<typeof SOURCE_FIELDS[number], string>>>;
 export const RULE_KEYWORDS: Record<string, string[]> = {
   "LABOR_MIN_WAGE": [
-    "최저임금"
+    "최저임금",
+    "시급"
   ],
   "LABOR_PENALTY": [
     "위약",
@@ -112,16 +113,16 @@ export const RULE_KEYWORDS: Record<string, string[]> = {
     "퇴사",
     "퇴직",
     "사직",
-    "그만"
+    "그만",
+    "해지"
   ],
   "LABOR_REQUIRED_TERMS": [
-    "기재",
-    "필수",
     "업무",
     "근무장소",
     "근무 장소",
     "임금지급",
     "지급일",
+    "지급 방법",
     "연차",
     "소정근로",
     "계약기간"
@@ -140,7 +141,7 @@ export const RULE_KEYWORDS: Record<string, string[]> = {
   ]
 };
 const DATE_PATTERN = new RegExp("(\\d{4})\\s*[-./년]\\s*(\\d{1,2})\\s*[-./월]\\s*(\\d{1,2})");
-const RENEWAL_PATTERN = new RegExp("연장|갱신|재계약|자동");
+const RENEWAL_PATTERN = new RegExp("(?:자동\\s*)?(?:연장|갱신|재계약)");
 const MONTH_PATTERN = new RegExp("(\\d{4})\\s*(?:[-./]|년)\\s*(\\d{1,2})(?!\\s*[-./월]\\s*\\d)(?:\\s*월)?");
 const RENEWAL_DENIED_PATTERN = new RegExp("^\\s*(?:은|는|이|가|을|를)?\\s*(?:없|않|불가|금지|아니|하지)");
 const BREAK_ALTERNATIVE_PATTERN = new RegExp("또는|혹은|선택|교대|요일별|요일에\\s*따라|격주");
@@ -216,7 +217,7 @@ export interface ResultCard extends Finding { source: "agent" | "engine" | "both
 export interface FinalView {
   incomplete: boolean; agent_summary: string; disputed: ResultCard[];
   level: Level | null; summary: string; cards: ResultCard[]; recommendations: string[];
-  requests: string[]; confirmed_items: string[]; missing_items: string[];
+  requests: string[]; requests_missing: string[]; confirmed_items: string[]; missing_items: string[];
   pending: Finding[]; disagree: boolean;
 }
 export type RuleCheck = [boolean | null, string, string, string];
@@ -319,7 +320,11 @@ export function date_ambiguous(value: unknown): boolean {
   const candidates = date_candidates(value);
   if (candidates.size > 1 || [...candidates].some(c => Array.isArray(c) && c[0] === "invalid")) return true;
   const joined = as_list(value).map(stringValue).join(" ");
-  return [...joined.matchAll(new RegExp(RENEWAL_PATTERN.source, "g"))].some(match => !RENEWAL_DENIED_PATTERN.test(joined.slice(match.index + match[0].length, match.index + match[0].length + 8)));
+  if (/또는|혹은/.test(joined)) return true;
+  return [...joined.matchAll(new RegExp(RENEWAL_PATTERN.source, "g"))].some(match => {
+    const tail = joined.slice(match.index + match[0].length, match.index + match[0].length + 15);
+    return !RENEWAL_DENIED_PATTERN.test(tail.slice(0, 8)) || /(?:않|아니)\S{0,3}\s*(?:경우|때|면)/.test(tail);
+  });
 }
 export function normalize_level(value: unknown): Level | null {
   const s = String(first(value)).trim().toLowerCase().replace(/ /g, "_");
@@ -363,6 +368,8 @@ export function parse_break(value: unknown): [boolean, number | null] {
   const s = text(value);
   if (!s) return [false, null];
   const core = s.replace(/\([^)]*\)/g, " ");
+  const notesInBrackets = [...s.matchAll(/\(([^)]*)\)/g)].map(match => match[1]).join(" ");
+  if (parse_times(notesInBrackets).length || BREAK_ALTERNATIVE_PATTERN.test(notesInBrackets) || BREAK_BY_DAY_PATTERN.test(notesInBrackets)) return [true, null];
   if (BREAK_ALTERNATIVE_PATTERN.test(core)) return [true, null];
   const times = parse_times(core);
   if (times.length >= 2) {
@@ -521,11 +528,12 @@ export function compute_facts(contract: ExtractedData, criteria: ExtractedData):
   const wageType = text(contract.wage_type);
   let amount = to_number(contract.wage_amount);
   let hourly: number | null = null, basis = "";
+  const candidates = amount_candidates(contract.wage_amount);
   if (amount === null && !is_blank(contract.wage_amount)) notes.push("임금 금액이 여러 개이거나 읽을 수 없어 어느 금액인지 정하지 못했습니다.");
-  else if (amount_candidates(contract.wage_amount).size > 1) {
+  else if (candidates.size > 1) {
     notes.push("임금 금액 문구에 서로 다른 금액이 여러 개 있어 어느 금액인지 정하지 못했습니다.");
     amount = null;
-  }
+  } else if (candidates.size === 1 && amount !== null) amount = [...candidates][0];
   if (amount !== null) {
     if (wageType.includes("시")) { hourly = amount; basis = "시급"; }
     else if (wageType.includes("일") && daily) { hourly = amount / (daily / 60); basis = `일급 ÷ 1일 근로시간 ${generalNumber(daily / 60)}시간`; }
@@ -640,7 +648,7 @@ export function check_break(contract: ExtractedData, facts: Facts): RuleCheck {
   if (work === 240 && rest === 0) {
     const breakText = text(contract.break_time);
     const explicit = EXPLICIT_NO_BREAK_PATTERN.test(breakText) && !NO_REQUEST_PATTERN.test(breakText);
-    const start = to_date(contract.contract_start_date);
+    const start = to_date(facts.contract_start_date);
     const exceptionStart = isoDate(BREAK_EXCEPTION_START);
     if (explicit && start !== null && start >= BREAK_EXCEPTION_START) return [false, `정확히 4시간 근무이고 근로자가 휴게 미사용을 명시적으로 요청해 ${exceptionStart}부터의 예외에 해당합니다.`, current, standard];
     const reason = explicit ? `근로자의 휴게 미사용 요청이 적혀 있지만, 예외는 ${exceptionStart}부터 적용됩니다. 그 전 근무에는 휴게 30분이 필요합니다.` : `1일 근로시간 4시간에는 휴게 30분이 필요합니다. ${exceptionStart}부터는 근로자가 명시적으로 요청하면 휴게 없이 일할 수 있으나, 계약서에 그런 요청이 적혀 있지 않습니다.`;
@@ -816,7 +824,8 @@ export function final_view(review: Review, engine: EngineResult, agent_level: Le
     const evidence = [...check.agent_unlinked, ...review.risky_clauses.map(stringValue)];
     const linked = new Set(evidence.flatMap(e => [...sentence_rules(e, nextYear)]));
     let allowance = more_severe(...pending.filter(f => linked.has(f.rule_code)).map(f => f.level || "risky"));
-    if (check.agent_unlinked.length || (!agentCodes.size && (pending.length || review.risky_clauses.length || review.missing_items.length))) allowance = more_severe(allowance, "check_needed");
+    const stray = review.risky_clauses.filter(clause => !sentence_rules(stringValue(clause), nextYear).size);
+    if (check.agent_unlinked.length || stray.length || (!agentCodes.size && (pending.length || review.risky_clauses.length || review.missing_items.length))) allowance = more_severe(allowance, "check_needed");
     level = more_severe(cardLevel || "safe", less_severe(agent_level, allowance));
     incomplete = false;
   } else if (engine.level !== null) {
@@ -837,5 +846,5 @@ export function final_view(review: Review, engine: EngineResult, agent_level: Le
     if (action && !recommendations.includes(action)) recommendations.push(action);
   }
   const confirmed = disagree || agent_level === null ? engine.findings.filter(f => f.hit === false && !finalCodes.has(f.rule_code)).map(f => RULE_PASS_TITLES[f.rule_code] ?? f.title + " 통과") : [...review.confirmed_items];
-  return { level, incomplete, summary: compose_summary(engine, cards, level, incomplete, agent_level, disputed), agent_summary: agent_level !== null ? review.summary : "", cards, recommendations, requests: agentRequests, confirmed_items: confirmed, missing_items: [...new Set([...engine.missing_items, ...drop_disputed(review.missing_items, disputedCodes, nextYear)])], pending, disputed, disagree };
+  return { level, incomplete, summary: compose_summary(engine, cards, level, incomplete, agent_level, disputed), agent_summary: agent_level !== null ? review.summary : "", cards, recommendations, requests: agentRequests, requests_missing: agentRequests.length ? cards.filter(card => !covered.has(card.rule_code)).map(card => card.title) : [], confirmed_items: confirmed, missing_items: [...new Set([...engine.missing_items, ...drop_disputed(review.missing_items, disputedCodes, nextYear)])], pending, disputed, disagree };
 }

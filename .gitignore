@@ -28,8 +28,11 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
+# Local environment values. Keep only explicit example files.
 .env*
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
 
 # vercel
 .vercel
@@ -57,3 +60,15 @@ next-env.d.ts
 !.env.example
 /HANDOFF.md
 *.tsbuildinfo
+
+# Local test, Python, and browser artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.cache/
+/test-results/
+/playwright-report/
+/tmp/
+*.log

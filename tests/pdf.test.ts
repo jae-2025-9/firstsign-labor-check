@@ -38,6 +38,8 @@ describe("review PDF", () => {
     ["10,800원 (수습기간 9천원)", "10,800원 (수습기간 9천원) (금액을 하나로 정하지 못함)"],
     ["시급 10,800원", "시급 10,800원"],
     [[10800], "10800"],
+    [10319.875, "10319.875"],
+    ["10,319.875원", "10319.875"],
     ["10,800원", "10800"],
     [null, "(비어 있음)"],
   ])("preserves wage evidence for %j", (wage_amount, expected) => {
@@ -113,4 +115,11 @@ describe("review PDF", () => {
     const bytes = await build_review_input(contract, criteria, compute_facts(contract, criteria), font);
     expect(extract_pdf(bytes)).toContain("최저임금(2027년, 시간급): 10,700원");
   });
+});
+
+
+it.skipIf(!hasPoppler)("preserves the decimal wage in the saved PDF", async () => {
+  const decimal = { ...contract, wage_amount: 10319.875 };
+  const bytes = await build_review_input(decimal, criteria, compute_facts(decimal, criteria), font);
+  expect(extract_pdf(bytes)).toContain("10319.875");
 });

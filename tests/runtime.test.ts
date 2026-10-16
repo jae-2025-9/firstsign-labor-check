@@ -2,10 +2,11 @@ import {describe,it,expect,vi,afterEach} from 'vitest';
 import {readFile} from 'node:fs/promises';
 import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
+import {AgentError} from '../src/lib/agent-client';
 import {review_stream,STREAM_CHUNK_BYTES} from '../src/lib/review-stream';
 import {cached_criteria} from '../src/lib/criteria-cache';
 import {criteria_source_codes,criteria_source_table} from '../src/lib/criteria-source';
-import {CrossCheckNotice,IncompleteNotice,DisputedNotice,CriteriaRepairNotice} from '../src/components/ReviewStatus';
+import {CrossCheckNotice,IncompleteNotice,DisputedNotice,CriteriaRepairNotice,RequestsMissingNotice} from '../src/components/ReviewStatus';
 import {evaluate,engine_review,cross_check,final_view,type CrossCheck} from '../src/lib/rules';
 import contract from '../fixtures/expected/contract_sample1.json';
 import criteria from '../fixtures/expected/criteria.json';
@@ -106,4 +107,18 @@ describe('source repair and disputed rendering',()=>{
   expect(renderToStaticMarkup(createElement(CriteriaRepairNotice,{codes:[]}))).toBe('');
   expect(renderToStaticMarkup(createElement(DisputedNotice,{disputed:[]}))).toBe('');
  });
+});
+
+
+it('shows uncovered request titles safely and hides the empty notice',()=>{
+ const html=renderToStaticMarkup(createElement(RequestsMissingNotice,{titles:['다음 해 최저임금 미달 예정','<script>test</script>']}));
+ expect(html).toContain('메시지에 빠진 지적:');expect(html).toContain('다음 해 최저임금 미달 예정');expect(html).toContain('&lt;script&gt;');expect(html).not.toContain('<script>');
+ expect(renderToStaticMarkup(createElement(RequestsMissingNotice,{titles:[]}))).toBe('');
+});
+
+it('delivers safe Studio diagnostics through the error stream',async()=>{
+ const message='에이전트 실행에 실패했습니다. [Studio: model_request_error] Model failed (Job 시도 3/3, 재시도 2회)';
+ const body=await new Response(review_stream(async()=>{throw new AgentError(message);})).text();
+ const events=body.trim().split('\n').map(line=>JSON.parse(line));
+ expect(events.at(-1)).toEqual({type:'error',error:message});expect(events.some(event=>event.type==='result')).toBe(false);
 });

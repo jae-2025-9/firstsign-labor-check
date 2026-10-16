@@ -6,11 +6,13 @@ const REVIEW_FIELDS = ["review_level", "summary", "matched_rules", "missing_item
 
 export class AgentError extends Error {
   readonly retryable: boolean;
+  readonly diagnostic?: {code:string; message:string};
 
-  constructor(message: string, retryable = false) {
+  constructor(message: string, retryable = false, diagnostic?: {code:string; message:string}) {
     super(message);
     this.name = "AgentError";
     this.retryable = retryable;
+    this.diagnostic = diagnostic;
   }
 }
 
@@ -27,6 +29,17 @@ export interface AgentOptions extends UploadOptions {
   timeout_ms?: number;
   poll_interval_ms?: number;
   attempts?: number;
+  diagnostic_secrets?: string[];
+}
+
+export function sanitize_diagnostic(value: unknown, secrets: string[]): string {
+  let result=typeof value==='string'?value:'';
+  for(const secret of [...secrets].filter(Boolean).sort((a,b)=>b.length-a.length)) result=result.split(secret).join('[REDACTED]');
+  return result.replace(/Bearer\s+[^\s,;"']+/gi,'Bearer [REDACTED]')
+    .replace(/(?:sk[-_]|gh[pousr]_)[A-Za-z0-9_-]+/g,'[REDACTED]')
+    .replace(/https?:\/\/[^\s"'<>]+/g,'[URL]')
+    .replace(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/gi,'[ID]')
+    .replace(/[\u0000-\u001f\u007f]/g,' ').trim().slice(0,500);
 }
 
 function is_record(value: unknown): value is ExtractedData {
@@ -115,7 +128,9 @@ export class AgentClient {
       if (response.status === "completed") return response;
       if (response.status === "failed") {
         const code = is_record(response.error) && typeof response.error.code === "string" ? response.error.code : "";
-        throw new AgentError("에이전트 실행에 실패했습니다.", RETRYABLE_ERROR_CODES.some((word) => code.includes(word)));
+        const secrets=[this.options.api_key,this.options.agent_id,this.options.config_id,...(this.options.diagnostic_secrets??[])];
+        const diagnostic={code:sanitize_diagnostic(code,secrets)||'unknown_error',message:sanitize_diagnostic(is_record(response.error)?response.error.message:'',secrets)||'Studio가 상세 오류 메시지를 제공하지 않았습니다.'};
+        throw new AgentError("에이전트 실행에 실패했습니다.", RETRYABLE_ERROR_CODES.some((word) => code.includes(word)), diagnostic);
       }
       if (response.status !== "queued" && response.status !== "in_progress") {
         throw new AgentError("에이전트가 결과를 완료하지 못했습니다.");
@@ -150,15 +165,19 @@ export class AgentClient {
     const configured = this.options.attempts ?? 3;
     const attempts = Number.isFinite(configured) ? Math.min(3, Math.max(1, Math.floor(configured))) : 3;
     for (let attempt = 1; attempt <= attempts; attempt++) {
-      const job_id = await this.create_job(file_id);
-      let raw: ExtractedData;
       try {
-        raw = await this.wait_until_complete(job_id);
+        const job_id = await this.create_job(file_id);
+        const raw = await this.wait_until_complete(job_id);
+        return { result: this.parse_result(raw), raw };
       } catch (error) {
-        if (!(error instanceof AgentError) || !error.retryable || attempt === attempts) throw error;
-        continue;
+        if (!(error instanceof AgentError)) throw error;
+        const retry=error.retryable && attempt<attempts;
+        const diagnostic=error.diagnostic??{code:'client_error',message:error.message};
+        const role=['CONTRACT','CRITERIA','REVIEW'].includes(this.options.name??'')?this.options.name:'AGENT';
+        console.error(JSON.stringify({event:'upstage_job_failed',role,code:diagnostic.code,message:diagnostic.message,attempt,max_attempts:attempts,retries:attempt-1,retry_scheduled:retry}));
+        if(retry)continue;
+        throw new AgentError(`${error.message} [Studio: ${diagnostic.code}] ${diagnostic.message} (Job 시도 ${attempt}/${attempts}, 재시도 ${attempt-1}회)`,error.retryable,diagnostic);
       }
-      return { result: this.parse_result(raw), raw };
     }
     throw new AgentError("에이전트 실행에 실패했습니다.");
   }

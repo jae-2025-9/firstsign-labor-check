@@ -38,7 +38,7 @@ function contract_value(contract: ExtractedData, key: string): string {
   if (key === "wage_amount") {
     const amount = to_number(value);
     const plain = items.every((item) => typeof item === "number" || typeof item === "boolean" || /^[\d,.\s]+원?$/.test(String(item)));
-    if (amount !== null && plain) return amount.toFixed(0);
+    if (amount !== null && plain) return String(amount);
     if (!raw) return EMPTY;
     return amount !== null && amount_candidates(value).size <= 1 ? raw : `${raw} (금액을 하나로 정하지 못함)`;
   }
