@@ -4,6 +4,12 @@
 
 고려대학교 세종캠퍼스 Document Agent 해커톤 · 2조 NPOS
 
+| 제출물 | 위치 |
+|---|---|
+| 서비스 데모 URL | https://firstsign-labor-check.jae1l.chatgpt.site (ChatGPT Sites, 실제 Studio 에이전트 연결) |
+| Studio 에이전트 JSON | [`agent_configs/`](agent_configs) (Contract · Criteria · Review Agent) |
+| 서비스 코드 | 이 저장소. 루트는 Python 원본(Studio 에이전트 호출 + Streamlit), [`site/`](site)는 데모 URL에 배포된 판(같은 판정 로직의 TypeScript 이식) |
+
 > 참고용 점검 도구이며 법률 자문이 아닙니다. 중요한 계약은 노무사나 고용노동부 상담(국번 없이 1350)으로 확인하세요.
 > 저장소의 계약서는 모두 가상 문서입니다.
 
@@ -57,7 +63,8 @@ Studio 에이전트 3개를 실제로 호출해 샘플 4종을 점검했습니�
 | 3 위험 | 위험 | 위험 | **위험** | 에이전트가 놓친 휴게시간·주휴일·필수 기재사항을 규칙 계산이 채워 지적 7건 |
 | 4 안심 | 안심 | 안심 | **안심** | 에이전트가 근거로 적은 서명·교부, 다음 해 최저임금은 계약서 값(양측 서명·교부 문구, 시급 10,800원 ≥ 10,700원)으로 해당하지 않아 '의견 차이'로 따로 표시 |
 
-- 계약서 추출(Contract Agent)은 팀 예상값과 같았습니다.
+- 계약서 추출(Contract Agent)은 샘플 4종 모두 팀 정답 라벨(`fixtures/expected/`)과 20개 항목이 일치했습니다.
+- 평가 에이전트의 분류는 실행마다 달라질 수 있습니다. 같은 정상 샘플 1을 근거 규칙·조항 없이 '위험'으로 분류한 응답이 배포 서버와 로컬에서 나왔고, 코드가 기준서 판정으로 '안심'으로 바로잡았습니다. 발표 시연은 `FORCE_DEMO=1`(저장된 실제 결과 재생)이 안정적입니다.
 - 기준서 추출(Criteria Agent)은 다음 해 최저임금 규칙의 조건·법령 근거·권장 행동 끝을 잘라 읽었습니다(표 칸이 페이지를 넘어감). 코드가 PDF 원문 표를 글자 위치로 읽어 바로잡습니다.
 - 한 번 점검에 2~3분 30초가 걸립니다. 대부분 Review Agent 시간입니다(Parse → Classify → Extract). `AGENT_TIMEOUT_SECONDS` 기본값을 420초로 두었습니다.
 - Studio가 가끔 `model_request_error`(분류 단계 일시 오류)를 돌려줍니다. 새 Job으로 최대 3번까지 다시 시도합니다(`AGENT_ATTEMPTS`).
@@ -133,15 +140,25 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-## 배포 (Railway)
+## 배포
 
-플레이북 6장과 같습니다.
+### 데모 URL (ChatGPT Sites)
 
-1. 이 폴더를 GitHub 저장소로 올립니다. `.env`는 `.gitignore`에 있어 올라가지 않습니다.
-2. Railway → New → GitHub Repository → 저장소 선택.
-3. Variables에 `.env`의 7개(`UPSTAGE_API_KEY`, `CONTRACT_AGENT_ID`, `CONTRACT_CONFIG_ID`, `CRITERIA_AGENT_ID`, `CRITERIA_CONFIG_ID`, `REVIEW_AGENT_ID`, `REVIEW_CONFIG_ID`)를 등록합니다. 발표 중 요청 제한이 걱정되면 `FORCE_DEMO=1`도 둡니다.
-4. Start Command는 [`railway.json`](railway.json)에 들어 있습니다: `streamlit run streamlit_app.py --server.port=$PORT --server.address=0.0.0.0`
-5. Settings → Networking → Generate Domain으로 공개 URL을 만듭니다.
+공개 데모는 [`site/`](site) 폴더를 ChatGPT Sites(Vinext, Cloudflare Workers)에 배포한 것입니다. 루트의 Python 원본과 판정 로직이 같습니다(같은 입력 373건과 저장된 실제 샘플 4종에서 결과 JSON 일치를 확인).
+
+- 서버 비밀값 7개: `UPSTAGE_API_KEY`, `CONTRACT_AGENT_ID`, `CONTRACT_CONFIG_ID`, `CRITERIA_AGENT_ID`, `CRITERIA_CONFIG_ID`, `REVIEW_AGENT_ID`, `REVIEW_CONFIG_ID`. 값은 저장소에 없습니다.
+- 한 번 점검에 실제 에이전트 호출로 3~10분이 걸려, 진행 상황을 스트리밍으로 보여 줍니다.
+- 기준서 표 원문 판독 결과는 Python 원본으로 미리 만들어 넣고, Worker에서는 기준서 PDF 해시가 같을 때만 씁니다.
+- 실행·테스트·배포 방법은 [`site/README.md`](site/README.md)에 있습니다.
+
+### Streamlit + Railway (플레이북 6장)
+
+루트의 Python 원본도 플레이북대로 Railway에 올릴 수 있습니다.
+
+1. 이 저장소를 Railway → New → GitHub Repository로 연결합니다. `.env`는 `.gitignore`에 있어 올라가지 않습니다.
+2. Variables에 위 7개를 등록합니다. 발표 중 요청 제한이 걱정되면 `FORCE_DEMO=1`도 둡니다.
+3. Start Command는 [`railway.json`](railway.json)에 들어 있습니다: `streamlit run streamlit_app.py --server.port=$PORT --server.address=0.0.0.0`
+4. Settings → Networking → Generate Domain으로 공개 URL을 만듭니다.
 
 ## 제출 전 확인
 
@@ -149,7 +166,8 @@ pytest
 - [x] 최종 설정을 다시 내보내 `agent_configs/`를 교체했다 (최종 제출물: Studio Agent JSON)
 - [x] `.env`의 Agent ID·Config ID가 "API로 이용하기" 화면 값과 같다
 - [x] `python app.py --sample N --save-fixture`로 샘플 4종의 실제 결과를 저장했다 (발표 중 요청 제한 대비)
-- [ ] 공개 URL에서 팀원이 아닌 사람이 샘플과 업로드로 결과까지 확인했다
+- [ ] 공개 URL에서 팀원이 아닌 사람이 샘플과 업로드로 결과까지 확인했다 (배포 서버 실제 호출: 버전 3에서 샘플·업로드 성공, 버전 4는 Studio 오류로 재확인 필요)
+- [x] GitHub 공개 저장소에 원본과 배포판(`site/`)을 함께 올렸다
 - [x] `git ls-files | grep -i env`에 `.env.example`만 나온다
 
 ## 검수
@@ -188,6 +206,8 @@ Codex(gpt-6-astra, reasoning xhigh) 읽기 전용 검수를 여섯 번 돌리고
 | `fixtures/expected/` | 팀이 만든 예상 추출값 (샘플 정답 라벨, 데모 모드) |
 | `fixtures/live/` | `--save-fixture`로 저장한 실제 에이전트 결과 |
 | `tests/` | 규칙 계산, 데모 서비스, 입력 PDF 테스트 |
+| `site/` | 데모 URL 배포판 (ChatGPT Sites, TypeScript). 자체 README·테스트 포함 |
+| `fonts/` | 입력 PDF용 나눔고딕 (SIL Open Font License 1.1) |
 
 ## 한계
 
