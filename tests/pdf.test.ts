@@ -32,6 +32,36 @@ describe("review PDF", () => {
     expect(rows.get("특약사항")).toBe("없음");
   });
 
+  it.each([
+    [[10800, 9500], "10800 / 9500 (금액을 하나로 정하지 못함)"],
+    ["10,800원 (수습 3개월은 9,500원)", "10,800원 (수습 3개월은 9,500원) (금액을 하나로 정하지 못함)"],
+    ["10,800원 (수습기간 9천원)", "10,800원 (수습기간 9천원) (금액을 하나로 정하지 못함)"],
+    ["시급 10,800원", "시급 10,800원"],
+    [[10800], "10800"],
+    ["10,800원", "10800"],
+    [null, "(비어 있음)"],
+  ])("preserves wage evidence for %j", (wage_amount, expected) => {
+    expect(new Map(contract_rows({ wage_amount })).get("임금 금액(원)")).toBe(expected);
+  });
+
+  it.each([
+    [[true, false], "True / False (예/아니오로 정하지 못함)"],
+    [[true], "예"],
+    [[false], "아니오"],
+    ["서명 확인 필요", "서명 확인 필요 (예/아니오로 정하지 못함)"],
+    [null, "(비어 있음)"],
+  ])("preserves signature evidence for %j", (is_signed, expected) => {
+    expect(new Map(contract_rows({ is_signed })).get("서명 여부(사업주·근로자 모두 서명)")).toBe(expected);
+  });
+
+  it.skipIf(!hasPoppler)("keeps ambiguous wage and signature source text in the saved PDF", async () => {
+    const ambiguous = { ...contract, wage_amount: "10,800원 (수습 3개월은 9,500원)", is_signed: [true, false] };
+    const bytes = await build_review_input(ambiguous, criteria, compute_facts(ambiguous, criteria), font);
+    const extracted = extract_pdf(bytes);
+    expect(extracted).toContain("10,800원 (수습 3개월은 9,500원) (금액을 하나로 정하지 못함)");
+    expect(extracted).toContain("True / False (예/아니오로 정하지 못함)");
+  });
+
   it("creates a readable Korean PDF with multiple pages for long values", async () => {
     const unbroken = `${"가".repeat(800)}공백없는끝`;
     const longContract = { ...contract, special_terms: [Array.from({ length: 180 }, (_, index) => `특약 원문 ${String(index).padStart(3, "0")} 전체 보존`).join("\n"), unbroken, "마지막 원문 보존 확인"] };

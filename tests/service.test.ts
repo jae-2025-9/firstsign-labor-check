@@ -4,6 +4,7 @@ import {PDFDocument} from 'pdf-lib';
 import {run_review_service,criteria_cache_key} from '../src/lib/service';
 import {settings,is_live_ready,SECRET_NAMES} from '../src/lib/settings';
 import {validate_pdf,MAX_BYTES} from '../src/lib/validation';
+import oracle from './fixtures/service-python-561d8bc.json';
 const config=settings({});
 const asset=async(path:string)=>new Uint8Array(await readFile(`public${path}`));
 describe('service boundary',()=>{
@@ -11,7 +12,6 @@ describe('service boundary',()=>{
  it('rejects upload in demo before asset or agent calls',async()=>{await expect(run_review_service({pdf_bytes:new Uint8Array([1])},{config,asset})).rejects.toThrow('데모');});
  it('rejects missing, ambiguous and unknown input',async()=>{for(const input of [{},{sample_id:'5'},{sample_id:'1',pdf_bytes:new Uint8Array()}]) await expect(run_review_service(input,{config,asset})).rejects.toThrow();});
  it.each([['1','safe'],['2','check_needed'],['3','risky'],['4','safe']])('sample %s produces %s',async(sample_id,level)=>{const steps:number[]=[];const r=await run_review_service({sample_id},{config,asset,use_recorded:false,progress:s=>steps.push(s)});expect(r.final_level).toBe(level);expect(r.mode).toBe('demo');expect(r.agent_level).toBeNull();expect(r.source).toBe('rules');expect(r.review_pdf_base64).toBeTruthy();expect(steps).toEqual([1,2,3,4,5]);});
- it.each([['2','risky'],['3','risky']])('FORCE_DEMO replays recorded sample %s without network',async(sample_id,level)=>{const forced=settings({...Object.fromEntries(SECRET_NAMES.map(k=>[k,'test'])),FORCE_DEMO:'1'});expect(is_live_ready(forced)).toBe(false);const r=await run_review_service({sample_id},{config:forced,asset,fetch:async()=>{throw Error('Unexpected network');}});expect(r.mode).toBe('demo');expect(r.source).toBe('recorded');expect(r.agent_level).toBe(level);expect(r.final_level).toBe(level);expect(r.review).toMatchObject({classify_level:null,schema_level:level});});
  it('cache key changes for document, agent and config changes',async()=>{const bytes=new Uint8Array([1]);const key=await criteria_cache_key(bytes,config);expect(await criteria_cache_key(bytes,config)).toBe(key);for(const alt of [{bytes:new Uint8Array([2]),config},{bytes,config:{...config,CRITERIA_AGENT_ID:'changed'}},{bytes,config:{...config,CRITERIA_CONFIG_ID:'changed'}}])expect(await criteria_cache_key(alt.bytes,alt.config)).not.toBe(key);});
 });
 describe('PDF validation',()=>{
@@ -40,5 +40,40 @@ describe('live service assembly with mocked Upstage',()=>{
   expect(r.source).toBe(classified?'agent':'agent_unclassified');
   expect(r.cross_check.status).toBe(classified?'match':'unavailable');
   expect(r.review).toMatchObject({classify_level:null,schema_level:classified?'safe':null});
+ });
+});
+
+
+describe('pinned Python service replay parity (561d8bc)',()=>{
+ it.each(['1','2','3','4'])('sample %s matches the original final result and cross-check',async sample_id=>{
+  const forced=settings({...Object.fromEntries(SECRET_NAMES.map(k=>[k,'test'])),FORCE_DEMO:'1'});
+  const r=await run_review_service({sample_id},{config:forced,asset,fetch:async()=>{throw Error('Unexpected network');}});
+  expect(r.mode).toBe('demo');expect(r.source).toBe('recorded');
+  const final=r.final!;
+  expect({final_level:r.final_level,cards:final.cards.map(({rule_code,source})=>({rule_code,source})),disputed:final.disputed,pending:final.pending,summary:final.summary,requests:final.requests,recommendations:final.recommendations,cross_check:r.cross_check,criteria_repaired:r.criteria_repaired}).toEqual(oracle.samples[sample_id as keyof typeof oracle.samples]);
+  expect(r.disputed_rule_codes).toEqual(final.disputed.map(card=>card.rule_code));
+  expect(r.criteria_repaired).toEqual(['LABOR_MIN_WAGE_NEXT']);
+  expect(final.recommendations.every(action=>!action.trimEnd().endsWith('10,700'))).toBe(true);
+  if(r.final_level==='safe'){expect(final.requests).toEqual([]);expect(final.recommendations).toEqual([]);}
+ });
+ it('repairs cached raw criteria before live review and keeps cache input unchanged',async()=>{
+  const contract=JSON.parse(await readFile('fixtures/live/contract_sample1.json','utf8'));
+  const raw=JSON.parse(await readFile('fixtures/live/criteria.json','utf8'));
+  const before=JSON.stringify(raw);const values=new Map<string,string>();
+  const fake=settings(Object.fromEntries(SECRET_NAMES.map(k=>[k,k+'-repair'])));
+  const bytes=await asset('/data/criteria_v2_2026-10.pdf');
+  values.set(await criteria_cache_key(bytes,fake),before);
+  const bucket={async get(key:string){const body=values.get(key);return body?{json:async()=>JSON.parse(body)}:null;}} as unknown as R2Bucket;
+  let current='';const jobs:string[]=[];
+  const fakeFetch:typeof fetch=async(url,options)=>{
+   if(String(url).endsWith('/files'))return Response.json({id:'file-test'});
+   if(options?.method==='POST'){current=JSON.parse(String(options.body)).model;jobs.push(current);return Response.json({id:'job-test'});}
+   return Response.json({status:'completed',output_text:JSON.stringify(current.startsWith('CONTRACT')?contract:{review_level:'safe',summary:'정상'})});
+  };
+  const r=await run_review_service({sample_id:'1'},{config:fake,asset,bucket,fetch:fakeFetch});
+  expect(jobs).toEqual(['CONTRACT_AGENT_ID-repair','REVIEW_AGENT_ID-repair']);
+  expect(r.criteria_repaired).toEqual(['LABOR_MIN_WAGE_NEXT']);expect(r.final_level).toBe('safe');
+  expect([...values.values()]).toEqual([before]);
+  expect(r.criteria).not.toEqual(raw);
  });
 });

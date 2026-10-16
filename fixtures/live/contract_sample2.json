@@ -1,24 +1,24 @@
 {
-  "employer_name": "한빛분식",
-  "employee_name": "박지훈",
-  "contract_start_date": "2026-10-05",
-  "contract_end_date": "",
-  "workplace": "세종특별자치시 한누리대로 456",
-  "job_description": "",
-  "work_days": [
-    "주 5일 (요일은 협의)"
-  ],
-  "work_start_time": "11:00",
-  "work_end_time": "17:00",
-  "break_time": "",
-  "weekly_holiday": "",
-  "wage_type": "시급",
-  "wage_amount": 10320,
-  "wage_payment_date": "",
-  "wage_payment_method": "현금",
-  "annual_leave_clause": "",
-  "social_insurance": "",
-  "copy_delivery_clause": "",
-  "special_terms": [],
-  "is_signed": false
+    "employer_name": "한빛분식",
+    "employee_name": "박지훈",
+    "contract_start_date": "2026-10-05",
+    "contract_end_date": "",
+    "workplace": "세종특별자치시 한누리대로 456",
+    "job_description": "",
+    "work_days": [
+        "주 5일 (요일은 협의)"
+    ],
+    "work_start_time": "11:00",
+    "work_end_time": "17:00",
+    "break_time": "",
+    "weekly_holiday": "",
+    "wage_type": "시급",
+    "wage_amount": 10320,
+    "wage_payment_date": "",
+    "wage_payment_method": "현금",
+    "annual_leave_clause": "",
+    "social_insurance": "",
+    "copy_delivery_clause": "",
+    "special_terms": [],
+    "is_signed": false
 }

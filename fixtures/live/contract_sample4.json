@@ -1,0 +1,26 @@
+{
+    "employer_name": "푸른서점 세종점",
+    "employee_name": "오하린",
+    "contract_start_date": "2026-10-12",
+    "contract_end_date": "2027-03-31",
+    "workplace": "세종특별자치시 한누리대로 88, 2층",
+    "job_description": "도서 진열, 계산, 매장 정리",
+    "work_days": [
+        "월",
+        "수",
+        "금"
+    ],
+    "work_start_time": "14:00",
+    "work_end_time": "17:30",
+    "break_time": "없음 (1일 근로시간이 4시간 미만)",
+    "weekly_holiday": "해당 없음 (1주 소정근로시간 15시간 미만)",
+    "wage_type": "시급",
+    "wage_amount": 10800,
+    "wage_payment_date": "매월 15일",
+    "wage_payment_method": "계좌이체 (사업주 명의 계좌)",
+    "annual_leave_clause": "해당 없음 (주 15시간 미만, 근로기준법 제18조 제3항)",
+    "social_insurance": "고용보험, 산재보험에 가입한다. 국민연금과 건강보험은 근로자와 협의한 다.",
+    "copy_delivery_clause": "사업주는 이 계약서를 2부 작성하여 근로자에게 1부를 교부한다.",
+    "special_terms": [],
+    "is_signed": true
+}

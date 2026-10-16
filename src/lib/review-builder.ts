@@ -1,6 +1,6 @@
 import fontkit from "@pdf-lib/fontkit";
 import { PDFDocument, rgb, type PDFFont, type PDFPage } from "pdf-lib";
-import { as_list, summarize_criteria, text, to_bool, to_number, won, type ExtractedData, type Facts } from "./rules";
+import { amount_candidates, as_list, is_blank, summarize_criteria, text, to_bool, to_number, won, type ExtractedData, type Facts } from "./rules";
 
 const EMPTY = "(비어 있음)";
 const CONTRACT_LABELS: readonly [string, string][] = [
@@ -28,13 +28,19 @@ const CONTRACT_LABELS: readonly [string, string][] = [
 
 function contract_value(contract: ExtractedData, key: string): string {
   const value = contract[key];
+  const items = as_list(value).filter((item) => !is_blank(item));
+  const raw = items.map((item) => typeof item === "boolean" ? (item ? "True" : "False") : String(item)).join(" / ");
   if (key === "is_signed") {
     const signed = to_bool(value);
-    return signed === null ? EMPTY : signed ? "예" : "아니오";
+    if (signed === null) return raw ? `${raw} (예/아니오로 정하지 못함)` : EMPTY;
+    return signed ? "예" : "아니오";
   }
   if (key === "wage_amount") {
     const amount = to_number(value);
-    return amount === null ? EMPTY : amount.toFixed(0);
+    const plain = items.every((item) => typeof item === "number" || typeof item === "boolean" || /^[\d,.\s]+원?$/.test(String(item)));
+    if (amount !== null && plain) return amount.toFixed(0);
+    if (!raw) return EMPTY;
+    return amount !== null && amount_candidates(value).size <= 1 ? raw : `${raw} (금액을 하나로 정하지 못함)`;
   }
   if (key === "special_terms") return as_list(value).map(String).join(" / ") || "없음";
   return text(value) || EMPTY;

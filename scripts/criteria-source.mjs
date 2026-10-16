@@ -15,3 +15,7 @@ if(process.argv.includes('--refresh')){
  if(index.sha256!==sha256||!index.codes.length)throw new Error('Criteria PDF changed. Run node scripts/criteria-source.mjs --refresh');
  console.log(`Criteria source hash verified: ${index.codes.length} codes`);
 }
+
+const sourceTable=JSON.parse(await readFile(new URL('../fixtures/criteria-source-table.json',import.meta.url),'utf8'));
+if(sourceTable.sha256!==sha256 || !Object.keys(sourceTable.table??{}).length)throw new Error('Criteria source table must be regenerated from the pinned Python source for this PDF');
+console.log(`Criteria source table verified: ${Object.keys(sourceTable.table).length} rules`);

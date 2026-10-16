@@ -156,9 +156,9 @@ describe("교차 검증과 최종 결과", () => {
     expect(new Set(result.cards.map(c => c.rule_code))).toEqual(new Set(engine.hit_codes)); expect(result.cards.every(c => c.source === "engine")).toBe(true);
   });
   it("에이전트만 지적한 규칙을 표시한다", () => {
-    const engine = evaluate(sample(), criteria()), agent = review({ review_level: "check_needed", matched_rules: ["LABOR_BREAK - 근로기준법 제54조"], recommendations: ["휴게시간을 적어 주세요."] });
+    const engine = evaluate(sample(), criteria()), agent = review({ review_level: "check_needed", matched_rules: ["LABOR_REQUIRED_TERMS - 근로기준법 제17조"], recommendations: ["업무 내용을 구체적으로 적어 주세요."] });
     const result = final_view(agent, engine, "check_needed", cross_check("check_needed", agent.matched_rules, engine));
-    expect(result.level).toBe("check_needed"); expect(result.cards.find(c => c.rule_code === "LABOR_BREAK")).toMatchObject({ source: "agent" }); expect(result.cards[0].reason).toContain("평가 에이전트가");
+    expect(result.level).toBe("check_needed"); expect(result.cards.find(c => c.rule_code === "LABOR_REQUIRED_TERMS")).toMatchObject({ source: "agent" }); expect(result.cards[0].reason).toContain("평가 에이전트가");
   });
   it("에이전트가 지적한 새 규칙을 보류에서 제외한다", () => {
     const c = criteria(); rules(c).push({ rule_code: "LABOR_NEW_RULE", category: "위험", check_condition: "새 규칙" });
@@ -304,7 +304,7 @@ describe("최신 원본 3차 회귀", () => {
   });
 });
 
-// 원본 pytest 100개와 추가 경계 사례에서 기록한 전체 결과를 비교합니다.
+// 원본 pytest 143개와 추가 경계 사례에서 기록한 전체 결과를 비교합니다.
 import * as pythonRules from "../src/lib/rules";
 interface ParityCase { function: string; args: unknown[]; expected: unknown }
 const parity = JSON.parse(readFileSync(new URL("./fixtures/rules-python-parity.json", import.meta.url), "utf8")) as {
@@ -323,7 +323,7 @@ function decodePython(value: unknown): unknown {
   return value;
 }
 function encodePython(value: unknown): unknown {
-  if (value instanceof Set) return { $set: [...value].sort() };
+  if (value instanceof Set) return { $set: [...value].sort((a, b) => typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b))) };
   if (value instanceof Date) return { $date: value.toISOString().slice(0, 10) };
   if (Array.isArray(value)) return value.map(encodePython);
   if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, encodePython(item)]));
@@ -331,12 +331,116 @@ function encodePython(value: unknown): unknown {
 }
 describe("최신 Python 전체 JSON 동등성", () => {
   it("요청한 원본 커밋과 녹화된 샘플 3을 포함한다", () => {
-    expect(parity.source_revision).toBe("9cef9f429b92e1643c8d3c561dd019c74b5911bb");
+    expect(parity.source_revision).toBe("561d8bc334aeef6b25f456640315554c4361bf3e");
     expect(parity.recorded_sample3).toMatchObject({ cross_status: "mismatch", final_level: "risky", incomplete: false });
   });
   it.each(parity.cases.map((test, index) => ({ ...test, index })))("$index: $function", ({ function: name, args, expected }) => {
     const fn = pythonRules[name as keyof typeof pythonRules] as (...input: unknown[]) => unknown;
     expect(typeof fn).toBe("function");
     expect(encodePython(fn(...args.map(decodePython)))).toEqual(expected);
+  });
+});
+
+const edgeInputs = JSON.parse(readFileSync(new URL("./fixtures/rules-edge-inputs.json", import.meta.url), "utf8")) as {
+  AMBIGUOUS_INPUTS: [ExtractedData, string][]; NORMAL_INPUTS: [ExtractedData, string][];
+};
+const runFinal = (contract: ExtractedData, level: Review["review_level"], matched: string[], overrides: Partial<Review> = {}, c = criteria()) => {
+  const engine = evaluate(contract, c, compute_facts(contract, c));
+  const agent = review({ review_level: level, matched_rules: matched, ...overrides });
+  return { engine, final: final_view(agent, engine, level, cross_check(level, matched, engine)) };
+};
+describe("561d8bc 원본 4·5차 회귀", () => {
+  it("통과가 확정된 규칙은 의견 차이로 분리한다", () => {
+    const { final } = runFinal(sample(), "check_needed", ["LABOR_BREAK - 제54조"], { recommendations: ["휴게시간을 적어 주세요."] });
+    expect(final.cards).toEqual([]); expect(final.disputed.map(d => d.rule_code)).toEqual(["LABOR_BREAK"]);
+    expect(final.level).toBe("safe"); expect(final.requests).toEqual([]); expect(final.recommendations).toEqual([]);
+    expect(final.summary).toContain("등급에 넣지 않았습니다"); expect(final.disagree).toBe(true);
+  });
+  it("에이전트 등급을 기준서의 규칙 분류에 맞춘다", () => {
+    const contract = sample(2), engine = evaluate(contract, criteria());
+    const { final } = runFinal(contract, "risky", engine.hit_codes);
+    expect(new Set(final.cards.map(card => card.level))).toEqual(new Set(["check_needed"]));
+    expect(final.level).toBe("check_needed"); expect(final.summary).toContain("기준서 분류에 맞춰");
+  });
+  it("규칙 코드가 없는 지적은 확인 필요까지 표시한다", () => {
+    const { final } = runFinal(sample(), "risky", ["기타 - 사장님 태도"]);
+    expect(final.cards).toEqual([]); expect(final.level).toBe("check_needed"); expect(final.summary).toContain("근거를 찾지 못해");
+  });
+  it.each(edgeInputs.AMBIGUOUS_INPUTS)("모호한 입력에서는 에이전트 지적을 의견 차이로 빼지 않는다: %j", (changes, code) => {
+    const { engine, final } = runFinal({ ...sample(), ...changes }, "check_needed", [`${code} - 근거`], { recommendations: ["확인해 주세요."] });
+    const finding = engine.findings.find(f => f.rule_code === code)!;
+    expect(finding.hit).toBeNull(); expect(final.cards.map(c => c.rule_code)).toContain(code);
+    expect(final.disputed).toEqual([]); expect(final.level).toBe(finding.level); expect(final.requests).toEqual(["확인해 주세요."]);
+  });
+  it.each([[true, false], [true, "미서명"]])("상충하는 서명을 통과로 보지 않는다: %j", (...signed) => {
+    const { engine, final } = runFinal({ ...sample(), is_signed: signed }, "check_needed", ["LABOR_SIGN_COPY"]);
+    expect(engine.findings.find(f => f.rule_code === "LABOR_SIGN_COPY")?.hit).not.toBe(false);
+    expect(final.disputed).toEqual([]); expect(final.level).toBe("check_needed");
+  });
+  it.each(edgeInputs.NORMAL_INPUTS)("명확한 입력의 통과 판정을 유지한다: %j", (changes, code) => {
+    const { engine, final } = runFinal({ ...sample(), ...changes }, "check_needed", [`${code} - 근거`]);
+    expect(engine.findings.find(f => f.rule_code === code)?.hit).toBe(false);
+    expect(final.disputed.map(d => d.rule_code)).toEqual([code]); expect(final.level).toBe("safe"); expect(final.cards).toEqual([]);
+  });
+  it("무관한 보류 규칙으로 등급을 올리지 않는다", () => {
+    const { engine, final } = runFinal({ ...sample(), special_terms: ["위약금은 없다."] }, "risky", ["LABOR_BREAK - 제54조"]);
+    expect(engine.undetermined_codes).toContain("LABOR_PENALTY"); expect(final.level).toBe("safe");
+    expect(runFinal({ ...sample(), wage_amount: [10800, 9500] }, "risky", ["기타 - 사장님 태도"]).final.level).toBe("check_needed");
+  });
+  it("근거가 없는 에이전트 경고를 따르지 않는다", () => {
+    const { final } = runFinal(sample(), "risky", [], { recommendations: [] });
+    expect(final.level).toBe("safe"); expect(final.summary).toContain("근거를 찾지 못해");
+  });
+  it.each([
+    [["LABOR_SIGN_COPY - 서명 누락; 기준서 밖 지적 - 계약 외 사항"]],
+    [["LABOR_SIGN_COPY - 서명 누락", "기준서 밖 지적 - 계약 외 사항"]],
+  ])("한 문장에 합쳐진 코드 없는 지적도 보존한다: %j", matched => {
+    const { final } = runFinal(sample(), "risky", matched, { recommendations: ["계약 외 사항을 확인해 주세요."] });
+    expect(final.level).toBe("check_needed"); expect(final.requests).toEqual(["계약 외 사항을 확인해 주세요."]);
+  });
+  it("채택된 규칙과 의견 차이 규칙을 함께 다룬 요청은 보존한다", () => {
+    const { final } = runFinal({ ...sample(), job_description: "" }, "check_needed", ["LABOR_REQUIRED_TERMS", "LABOR_SIGN_COPY"], { recommendations: ["업무 내용을 명시한 계약서를 교부해 주세요."] });
+    expect(final.disputed.map(d => d.rule_code)).toEqual(["LABOR_SIGN_COPY"]); expect(final.requests).toEqual(["업무 내용을 명시한 계약서를 교부해 주세요."]);
+  });
+  it("요청을 제거해도 각 카드의 권장 행동은 유지한다", () => {
+    const { final } = runFinal({ ...sample(), job_description: "" }, "check_needed", ["LABOR_REQUIRED_TERMS", "LABOR_BREAK"], { recommendations: ["휴게시간을 넣어 주세요."] });
+    expect(final.requests).toEqual([]); expect(final.recommendations.some(action => action.includes("빠진 항목"))).toBe(true);
+  });
+  it("무관한 의견 차이가 있어도 보류 규칙의 코드 없는 지적은 유지한다", () => {
+    const { engine, final } = runFinal({ ...sample(), special_terms: ["퇴사하려면 사장님의 허가를 받아야 한다."] }, "risky", ["부당한 퇴사 제한 - 퇴사하려면 사장님 허가 필요", "LABOR_SIGN_COPY - 제17조"], { recommendations: ["퇴사 제한 조항을 빼 주세요."] });
+    expect(engine.findings.find(f => f.rule_code === "LABOR_PENALTY")?.hit).toBeNull(); expect(final.disputed.map(d => d.rule_code)).toEqual(["LABOR_SIGN_COPY"]);
+    expect(final.level).toBe("risky"); expect(final.requests).toEqual(["퇴사 제한 조항을 빼 주세요."]); expect(final.summary).toContain("에이전트 판단대로 '위험'");
+  });
+  it("보류 규칙이 없으면 코드 없는 지적은 확인 필요다", () => {
+    expect(runFinal(sample(), "risky", ["부당한 퇴사 제한 - 근거 없음"]).final.level).toBe("check_needed");
+  });
+  it("일부 의견 차이에서는 반박된 문장만 제거한다", () => {
+    const { final } = runFinal({ ...sample(), job_description: "" }, "check_needed", ["LABOR_REQUIRED_TERMS - 제17조", "LABOR_BREAK - 제54조"], { missing_items: ["휴게시간", "업무의 내용"], recommendations: ["업무 내용을 적어 주세요.", "휴게시간이 없으니 30분을 넣어 주세요."] });
+    expect(final.disputed.map(d => d.rule_code)).toEqual(["LABOR_BREAK"]); expect(final.level).toBe("check_needed"); expect(final.requests).toEqual(["업무 내용을 적어 주세요."]);
+    expect(final.recommendations).not.toContain("휴게시간이 없으니 30분을 넣어 주세요."); expect(final.missing_items).not.toContain("휴게시간"); expect(final.missing_items).toContain("업무의 내용");
+  });
+  it("다음 해 금액 문장을 다음 해 규칙에 연결한다", () => {
+    const sentences = ["2027년 1월 1일부터 시급을 10,700원 이상으로 올려 주세요.", "시급을 최저임금 이상으로 올려 주세요."];
+    expect(pythonRules.drop_disputed(sentences, new Set(["LABOR_MIN_WAGE_NEXT"]), 2027)).toEqual([sentences[1]]);
+    expect(pythonRules.drop_disputed(sentences, new Set(["LABOR_MIN_WAGE"]), 2027)).toEqual([sentences[0]]);
+  });
+  it("잘린 추출 칸만 원문 표로 복구한다", () => {
+    const c = criteria(), row = rules(c).find(r => r.rule_code === "LABOR_MIN_WAGE_NEXT")!;
+    row.check_condition = "계약기간이 2027년 1월 1일 이후까지 이어지는데 시급이 2027년 최저임금 10,700원 미만이다. 종료";
+    row.recommended_action = "2027년 1월 1일부 터 시급을 10,700";
+    const source = { LABOR_MIN_WAGE_NEXT: { check_condition: KNOWN_CONDITIONS.LABOR_MIN_WAGE_NEXT[0], recommended_action: "2027년 1월 1일부 터 시급을 10,700 원 이상으로 올려 달라고 요청하세 요." } };
+    const [fixed, repaired] = pythonRules.apply_source_table(c, source);
+    expect(repaired).toEqual(["LABOR_MIN_WAGE_NEXT"]); expect(fixed.check_rules).not.toBe(c.check_rules);
+    const rule = criteria_rules(fixed).find(r => r.rule_code === "LABOR_MIN_WAGE_NEXT")!;
+    expect(condition_supported(rule, 2026)[0]).toBe(true); expect(rule.recommended_action.endsWith("요청하세 요.")).toBe(true);
+    const [same, none] = pythonRules.apply_source_table(fixed, source); expect(same).toBe(fixed); expect(none).toEqual([]);
+    expect(pythonRules.apply_source_table(c, {})).toEqual([c, []]);
+  });
+  it("더 길거나 다른 내용인 추출을 자르지 않는다", () => {
+    const c = criteria(), known = KNOWN_CONDITIONS.LABOR_MIN_WAGE[0];
+    rules(c).find(r => r.rule_code === "LABOR_MIN_WAGE")!.check_condition = known + " 단, 시급이 11,000원 미만이면 위반으로 본다.";
+    const [fixed, repaired] = pythonRules.apply_source_table(c, { LABOR_MIN_WAGE: { check_condition: known } });
+    expect(fixed).toBe(c); expect(repaired).toEqual([]); expect(condition_supported(criteria_rules(fixed)[0], 2026)[0]).toBe(false);
+    expect(pythonRules.apply_source_table(c, { LABOR_MIN_WAGE: { check_condition: "전혀 다른 조건이다. 그리고 더 길다. 훨씬 더 길다." } })).toEqual([c, []]);
   });
 });

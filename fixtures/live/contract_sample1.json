@@ -1,0 +1,28 @@
+{
+    "employer_name": "성실카페 세종점",
+    "employee_name": "김민준",
+    "contract_start_date": "2026-10-01",
+    "contract_end_date": "2027-09-30",
+    "workplace": "세종특별자치시 조치원읍 세종로 123, 1층",
+    "job_description": "음료 제조 및 조리 보조, 홀 서빙, 매장 정리",
+    "work_days": [
+        "월",
+        "화",
+        "수",
+        "목",
+        "금"
+    ],
+    "work_start_time": "09:00",
+    "work_end_time": "15:00",
+    "break_time": "12:00 ~ 12:30 (30분)",
+    "weekly_holiday": "일요일",
+    "wage_type": "시급",
+    "wage_amount": 10800,
+    "wage_payment_date": "매월 10일",
+    "wage_payment_method": "계좌이체",
+    "annual_leave_clause": "근로기준법 제60조에 따른 연차유급휴가를 부여한다.",
+    "social_insurance": "고용보험, 산재보험에 가입한다. 국민연금과 건강보험은 근로자와 협의한 다.",
+    "copy_delivery_clause": "사업주는 이 계약서를 2부 작성하여 근로자에게 1부를 교부한다.",
+    "special_terms": [],
+    "is_signed": true
+}

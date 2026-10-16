@@ -4,8 +4,8 @@ import {createElement} from 'react';
 import {renderToStaticMarkup} from 'react-dom/server';
 import {review_stream,STREAM_CHUNK_BYTES} from '../src/lib/review-stream';
 import {cached_criteria} from '../src/lib/criteria-cache';
-import {criteria_source_codes} from '../src/lib/criteria-source';
-import {CrossCheckNotice,IncompleteNotice} from '../src/components/ReviewStatus';
+import {criteria_source_codes,criteria_source_table} from '../src/lib/criteria-source';
+import {CrossCheckNotice,IncompleteNotice,DisputedNotice,CriteriaRepairNotice} from '../src/components/ReviewStatus';
 import {evaluate,engine_review,cross_check,final_view,type CrossCheck} from '../src/lib/rules';
 import contract from '../fixtures/expected/contract_sample1.json';
 import criteria from '../fixtures/expected/criteria.json';
@@ -81,5 +81,29 @@ describe('result status rendering',()=>{
  it('shows the level as a floor when incomplete',()=>{
   const final={...final_view(review,engine,'safe',check),level:'risky' as const,incomplete:true};
   expect(renderToStaticMarkup(createElement(IncompleteNotice,{final,engine}))).toContain('최소');
+ });
+});
+
+
+describe('source repair and disputed rendering',()=>{
+ it('does not apply a table to another PDF',async()=>{
+  const bytes=new Uint8Array(await readFile('public/data/criteria_v2_2026-10.pdf'));
+  expect(Object.keys(await criteria_source_table(bytes))).toHaveLength(7);
+  expect(await criteria_source_table(bytes.slice(1))).toEqual({});
+ });
+ it('keeps disputed agent flags separate from the grade and escapes their text',()=>{
+  const engine=evaluate(contract,criteria),review={...engine_review(engine),matched_rules:['LABOR_SIGN_COPY'],recommendations:['사본을 주세요.']};
+  const check=cross_check('safe',review.matched_rules,engine),final=final_view(review,engine,'safe',check);
+  expect(final.level).toBe('safe');expect(final.requests).toEqual([]);expect(final.cards).toEqual([]);
+  expect(final.disputed).toHaveLength(1);
+  const html=renderToStaticMarkup(createElement(DisputedNotice,{disputed:final.disputed.map(x=>({...x,reason:'<script>alert(1)</script>'}))}));
+  expect(html).toContain('의견 차이 (1건) · 등급에 넣지 않음');expect(html).toContain('&lt;script&gt;');expect(html).not.toContain('<script>');
+  const notice=renderToStaticMarkup(createElement(CrossCheckNotice,{source:'recorded',check,review,disputed:final.disputed}));
+  expect(notice).toContain('최종 등급은 지적한 규칙의 기준서 분류로 정했고');expect(notice).toContain('의견 차이');expect(notice).not.toContain('더 엄격한 등급과');
+ });
+ it('explains repaired criteria in details and hides empty notices',()=>{
+  expect(renderToStaticMarkup(createElement(CriteriaRepairNotice,{codes:['LABOR_MIN_WAGE_NEXT']}))).toContain('PDF 원문 표로 바로잡았습니다.');
+  expect(renderToStaticMarkup(createElement(CriteriaRepairNotice,{codes:[]}))).toBe('');
+  expect(renderToStaticMarkup(createElement(DisputedNotice,{disputed:[]}))).toBe('');
  });
 });

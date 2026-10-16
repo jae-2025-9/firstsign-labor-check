@@ -1,10 +1,10 @@
-import { compute_facts, evaluate, engine_review, cross_check, final_view, criteria_problems, looks_like_contract, type ExtractedData } from './rules';
+import { apply_source_table, compute_facts, evaluate, engine_review, cross_check, final_view, criteria_problems, looks_like_contract, type ExtractedData } from './rules';
 import { build_review_input, contract_rows } from './review-builder';
 import { AgentClient, normalize_review } from './agent-client';
 import { is_live_ready, type Settings } from './settings';
 import { ServiceError, validate_pdf } from './validation';
 import { demo_inputs, sample_ids } from './demo-inputs';
-import { criteria_source_codes, sha256 } from './criteria-source';
+import { criteria_source_codes, criteria_source_table, sha256 } from './criteria-source';
 import { cached_criteria } from './criteria-cache';
 
 export type ServiceContext = { config: Settings; asset: (path: string) => Promise<Uint8Array>; bucket?: R2Bucket; progress?: (step:number,message:string)=>void; fetch?:typeof fetch; use_recorded?:boolean };
@@ -39,7 +39,8 @@ export async function run_review_service(input:{sample_id?:string;pdf_bytes?:Uin
  progress(2,live?'점검 기준서 불러오기 (Criteria Agent)':'기준서 추출값 불러오기');
  const criteriaPdf=await ctx.asset('/data/criteria_v2_2026-10.pdf');
  const codes=await criteria_source_codes(criteriaPdf);
- const criteria=live?await load_or_extract_criteria(ctx,criteriaPdf,codes):demo!.criteria;
+ const extracted=live?await load_or_extract_criteria(ctx,criteriaPdf,codes):demo!.criteria;
+ const [criteria,criteria_repaired]=apply_source_table(extracted,await criteria_source_table(criteriaPdf));
  const facts=compute_facts(contract,criteria);
  progress(3,'계약 정보·기준서·계산 보조값으로 평가 입력 PDF 조립');
  const pdf=(!live||looks_like_contract(contract))?await build_review_input(contract,criteria,facts,await ctx.asset('/fonts/NanumGothic-Regular.ttf')):null;
@@ -53,6 +54,6 @@ export async function run_review_service(input:{sample_id?:string;pdf_bytes?:Uin
  if(source==='agent'&&review&&agent_level===null)source='agent_unclassified';
  const check=cross_check(agent_level,review?.matched_rules??[],engine);
  const final=review?final_view(review,engine,agent_level,check):null;
- return {mode:live?'live':'demo',source,sample_id:input.sample_id??null,contract,contract_rows:contract_rows(contract),criteria,facts,engine,review,agent_level,engine_level:engine.level,final_level:final?.level??null,final,cross_check:check,review_pdf_base64:pdf?Buffer.from(pdf).toString('base64'):null};
+ return {mode:live?'live':'demo',source,sample_id:input.sample_id??null,contract,contract_rows:contract_rows(contract),criteria,criteria_repaired,facts,engine,review,agent_level,engine_level:engine.level,final_level:final?.level??null,final,disputed_rule_codes:final?.disputed.map(card=>card.rule_code)??[],cross_check:check,review_pdf_base64:pdf?Buffer.from(pdf).toString('base64'):null};
 }
 export type ReviewResult=Awaited<ReturnType<typeof run_review_service>>;

@@ -1,0 +1,168 @@
+{
+  "AMBIGUOUS_INPUTS": [
+    [
+      {
+        "wage_amount": [
+          10800,
+          9500
+        ]
+      },
+      "LABOR_MIN_WAGE"
+    ],
+    [
+      {
+        "wage_amount": "10,800원 (수습 3개월은 9,500원)"
+      },
+      "LABOR_MIN_WAGE"
+    ],
+    [
+      {
+        "wage_amount": "10,800원 (수습기간 9천원)"
+      },
+      "LABOR_MIN_WAGE"
+    ],
+    [
+      {
+        "wage_amount": 10500,
+        "contract_end_date": [
+          "2026-12-31, 2027-12-31"
+        ]
+      },
+      "LABOR_MIN_WAGE_NEXT"
+    ],
+    [
+      {
+        "wage_amount": 10500,
+        "contract_end_date": "2026-12-31 (자동 연장 시 2027-12-31)"
+      },
+      "LABOR_MIN_WAGE_NEXT"
+    ],
+    [
+      {
+        "wage_amount": 10500,
+        "contract_end_date": [
+          "2026-12-31",
+          "2027년 12월"
+        ]
+      },
+      "LABOR_MIN_WAGE_NEXT"
+    ],
+    [
+      {
+        "wage_amount": 10500,
+        "contract_end_date": [
+          "2026-12-31",
+          "2027-02-30"
+        ]
+      },
+      "LABOR_MIN_WAGE_NEXT"
+    ],
+    [
+      {
+        "break_time": "12:00~12:30 또는 13:00~13:30"
+      },
+      "LABOR_BREAK"
+    ],
+    [
+      {
+        "break_time": "21:00~22:00"
+      },
+      "LABOR_BREAK"
+    ],
+    [
+      {
+        "work_start_time": "22:00",
+        "work_end_time": "07:00",
+        "break_time": "23:45~00:15, 00:00~00:30"
+      },
+      "LABOR_BREAK"
+    ],
+    [
+      {
+        "work_end_time": "18:00",
+        "break_time": "평일 12:00~12:30, 주말 12:00~13:00"
+      },
+      "LABOR_BREAK"
+    ],
+    [
+      {
+        "weekly_holiday": "매주 협의하여 정한다."
+      },
+      "LABOR_WEEKLY_HOLIDAY"
+    ],
+    [
+      {
+        "copy_delivery_clause": "근로자에게 계약서를 교부한다는 규정은 없다."
+      },
+      "LABOR_SIGN_COPY"
+    ]
+  ],
+  "NORMAL_INPUTS": [
+    [
+      {
+        "work_end_time": "18:00",
+        "break_time": "평일 12:00~13:00"
+      },
+      "LABOR_BREAK"
+    ],
+    [
+      {
+        "break_time": "12:00~12:30, 14:00~14:15"
+      },
+      "LABOR_BREAK"
+    ],
+    [
+      {
+        "wage_amount": "10,800원 (2026-10-01 기준)"
+      },
+      "LABOR_MIN_WAGE"
+    ],
+    [
+      {
+        "wage_amount": "월 2,300,000원 (주 40시간, 주휴 포함 209시간)",
+        "wage_type": "월급",
+        "work_end_time": "18:00",
+        "break_time": "12:00~13:00"
+      },
+      "LABOR_MIN_WAGE"
+    ],
+    [
+      {
+        "wage_amount": [
+          "10,800원",
+          "10800"
+        ]
+      },
+      "LABOR_MIN_WAGE"
+    ],
+    [
+      {
+        "wage_amount": 10800,
+        "contract_end_date": "2027-09-30 (연장 없음)"
+      },
+      "LABOR_MIN_WAGE_NEXT"
+    ],
+    [
+      {
+        "wage_amount": 10500,
+        "contract_end_date": "2026-12-31 (연장 없음)"
+      },
+      "LABOR_MIN_WAGE_NEXT"
+    ],
+    [
+      {
+        "copy_delivery_clause": "근로자에게 계약서를 교부한다. 교부 비용은 없다."
+      },
+      "LABOR_SIGN_COPY"
+    ],
+    [
+      {
+        "is_signed": [
+          "true",
+          "예"
+        ]
+      },
+      "LABOR_SIGN_COPY"
+    ]
+  ]
+}
