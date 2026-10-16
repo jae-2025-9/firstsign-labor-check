@@ -166,7 +166,7 @@ pytest
 - [x] 최종 설정을 다시 내보내 `agent_configs/`를 교체했다 (최종 제출물: Studio Agent JSON)
 - [x] `.env`의 Agent ID·Config ID가 "API로 이용하기" 화면 값과 같다
 - [x] `python app.py --sample N --save-fixture`로 샘플 4종의 실제 결과를 저장했다 (발표 중 요청 제한 대비)
-- [ ] 공개 URL에서 팀원이 아닌 사람이 샘플과 업로드로 결과까지 확인했다 (배포 서버 실제 호출: 버전 3에서 샘플·업로드 성공, 버전 4는 Studio 오류로 재확인 필요)
+- [ ] 공개 URL에서 팀원이 아닌 사람이 샘플과 업로드로 결과까지 확인했다 (배포 서버 실제 호출: 버전 5에서 샘플 1이 39초 만에 성공. Studio 처리 시간이 시간대에 따라 1~7분 이상으로 달라 시연 직전에 한 번 더 확인)
 - [x] GitHub 공개 저장소에 원본과 배포판(`site/`)을 함께 올렸다
 - [x] `git ls-files | grep -i env`에 `.env.example`만 나온다
 
