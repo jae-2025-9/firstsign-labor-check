@@ -55,8 +55,9 @@ def test_polling_respects_deadline(monkeypatch):
 
     class Client:
         responses = Responses()
-        def with_options(self, timeout):
+        def with_options(self, timeout, max_retries):
             assert timeout <= agent_client.HTTP_TIMEOUT_SECONDS
+            assert max_retries == 0
             return self
 
     monkeypatch.setattr(agent_client, "get_client", lambda: Client())
@@ -67,3 +68,48 @@ def test_polling_respects_deadline(monkeypatch):
     with pytest.raises(agent_client.AgentError, match="180초"):
         agent_client.AgentClient("agt_x", "1", "Test").wait_until_complete("job")
     assert clock["now"] <= 200
+
+
+def test_review_with_only_empty_fields_is_an_error():
+    import pytest
+    from agent_client import AgentError
+    for empty in ({"summary": []}, {"summary": None}, {"review_level": []}):
+        with pytest.raises(AgentError):
+            normalize_review(empty, {})
+
+
+def test_review_with_wrong_types_is_an_error():
+    import pytest
+    from agent_client import AgentError
+    with pytest.raises(AgentError):
+        normalize_review({"summary": {"text": "x"}}, {})
+
+
+def test_retryable_studio_error_creates_a_new_job(monkeypatch):
+    import agent_client
+
+    jobs = []
+
+    class Err:
+        code = "model_request_error"
+        message = "The model request failed. Please retry."
+
+    class Responses:
+        def create(self, **kwargs):
+            jobs.append(len(jobs))
+            return type("J", (), {"id": f"job_{len(jobs)}"})()
+
+        def retrieve(self, job_id, include):
+            if job_id == "job_1":
+                return type("R", (), {"status": "failed", "error": Err()})()
+            return type("R", (), {"status": "completed", "output_text": '{"summary": "ok"}', "model_dump": lambda self, mode: {}})()
+
+    class Client:
+        responses = Responses()
+        def with_options(self, **kwargs):
+            return self
+
+    monkeypatch.setattr(agent_client, "get_client", lambda: Client())
+    result, _ = agent_client.AgentClient("agt_x", "cfg_x", "Test").run("file_x")
+    assert result == {"summary": "ok"}
+    assert len(jobs) == 2

@@ -50,6 +50,7 @@ from rules import (
     compute_facts,
     criteria_problems,
     evaluate,
+    is_blank,
     looks_like_contract,
     more_severe,
     normalize_level,
@@ -191,8 +192,13 @@ def normalize_review(review: dict, raw: dict) -> dict:
     결과 스키마의 항목이 하나도 없으면(빈 결과) 평가가 끝난 것으로 보지 않고 오류를 낸다.
     """
 
-    if not any(key in review for key in REVIEW_FIELDS):
-        raise AgentError("평가 에이전트 결과에 결과 스키마 항목이 없습니다. Review Agent 설정을 확인해 주세요.")
+    if not any(not is_blank(review.get(key)) for key in REVIEW_FIELDS):
+        raise AgentError("평가 에이전트 결과가 비어 있습니다. Review Agent 설정을 확인해 주세요.")
+
+    for key in REVIEW_FIELDS:
+        value = review.get(key)
+        if value is not None and not isinstance(value, (str, list)):
+            raise AgentError(f"평가 에이전트 결과의 {key} 형식이 올바르지 않습니다.")
 
     schema_level = normalize_level(review.get("review_level"))
     classify_level = find_classification(raw, LEVELS)

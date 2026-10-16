@@ -581,3 +581,82 @@ def test_line_wrap_inside_numbers_is_tolerated(criteria):
     # PDF 표 셀의 줄바꿈("2026\n년", "1\n5시간")은 공백으로 보고 지운다. 숫자를 바꾸는 보정은 하지 않는다.
     wrapped = with_condition(criteria, "LABOR_REQUIRED_TERMS", lambda c: c.replace("15시간 미만", "1\n5시간 미만"))
     assert "LABOR_REQUIRED_TERMS" not in evaluate(load("contract_sample1.json"), wrapped)["undetermined_codes"]
+
+
+##################################################
+# Codex 검수 3차 회귀 테스트
+##################################################
+
+def test_cross_check_partial_when_engine_pending(criteria):
+    from rules import final_view
+    prefixed = copy.deepcopy(criteria)
+    for rule in prefixed["check_rules"]:
+        rule["check_condition"] = "점검 조건: " + rule["check_condition"]
+    engine = evaluate(load("contract_sample1.json"), prefixed)
+    check = cross_check("safe", [], engine)
+    assert engine["level"] is None and check["status"] == "partial"
+    final = final_view(agent_review(), engine, "safe", check)
+    assert final["level"] == "safe" and final["incomplete"] is False
+
+
+def test_cross_check_mismatch_on_level_only(criteria):
+    engine = evaluate(load("contract_sample1.json"), criteria)
+    check = cross_check("risky", [], engine)
+    assert check["status"] == "mismatch"
+
+
+def test_summary_is_always_rebuilt(criteria):
+    from rules import final_view
+    engine = evaluate(load("contract_sample3.json"), criteria)
+    review = agent_review(review_level="risky", summary="모든 규칙을 충족합니다.",
+                          matched_rules=[f"{code} - x" for code in engine["hit_codes"]])
+    final = final_view(review, engine, "risky", cross_check("risky", review["matched_rules"], engine))
+    assert "모든 규칙을 충족합니다" not in final["summary"]
+    assert final["agent_summary"] == "모든 규칙을 충족합니다."
+
+
+@pytest.mark.parametrize("field,value", [
+    ("annual_leave_clause", "연차유급휴가는 근로기준법에 따라 부여하며 사용일은 협의하여 정한다."),
+    ("weekly_holiday", "매주 일요일 (변경 없음)"),
+])
+def test_normal_sentences_are_not_missing(field, value, criteria):
+    contract = load("contract_sample1.json")
+    contract[field] = [value]
+    result = evaluate(contract, criteria)
+    assert result["level"] == "safe"
+
+
+def test_unclear_annual_leave_sentence_is_pending(criteria):
+    contract = load("contract_sample1.json")
+    contract["annual_leave_clause"] = ["연차유급휴가는 회사 사정에 따라 협의한다."]
+    assert "LABOR_REQUIRED_TERMS" in evaluate(contract, criteria)["undetermined_codes"]
+
+
+def test_copy_with_unrelated_negation_is_ok(criteria):
+    contract = load("contract_sample1.json")
+    contract["copy_delivery_clause"] = ["근로자의 교부 요구와 관계없이 계약서 1부를 근로자에게 교부한다."]
+    assert evaluate(contract, criteria)["level"] == "safe"
+
+
+def test_tax_and_insurance_deduction_is_not_a_penalty(criteria):
+    contract = load("contract_sample1.json")
+    contract["special_terms"] = ["소득세와 4대 보험료를 임금에서 공제한다."]
+    result = evaluate(contract, criteria)
+    assert "LABOR_PENALTY" not in result["hit_codes"] + result["undetermined_codes"]
+
+
+@pytest.mark.parametrize("break_text", [
+    "휴게 없음 (근로자가 휴게 미사용을 요청하지 않음)",
+    "휴게 없음 (사용자가 휴게 미사용을 요청함)",
+])
+def test_break_exception_needs_worker_request(break_text, criteria):
+    contract = load("contract_sample1.json")
+    contract.update(contract_start_date=["2026-12-10"], work_start_time=["09:00"], work_end_time=["13:00"], break_time=[break_text])
+    finding = next(f for f in evaluate(contract, criteria)["findings"] if f["rule_code"] == "LABOR_BREAK")
+    assert finding["hit"] is True
+
+
+@pytest.mark.parametrize("old,new", [("2026년", "2026\n년"), ("2027년", "2027\n년"), ("10,320", "1\n0,320")])
+def test_line_wraps_in_years_and_amounts_are_tolerated(old, new, criteria):
+    wrapped = with_condition(criteria, "LABOR_MIN_WAGE", lambda c: c.replace(old, new))
+    assert "LABOR_MIN_WAGE" not in evaluate(load("contract_sample1.json"), wrapped)["undetermined_codes"]

@@ -107,3 +107,15 @@ def test_live_needs_all_settings(monkeypatch):
     monkeypatch.setattr(config, "UPSTAGE_API_KEY", "")
     assert not config.is_live_ready()
     assert "UPSTAGE_API_KEY" in config.missing_settings()
+
+
+def test_recorded_agent_result_sample3(monkeypatch):
+    # fixtures/live의 실제 에이전트 결과(샘플 3): 에이전트가 놓친 규칙을 규칙 계산이 채운다
+    monkeypatch.setattr(service, "FIXTURE_DIR", config.FIXTURE_DIR)
+    result = service.run_review_service(sample_id="3")
+    assert result["source"] == "recorded"
+    assert result["agent_level"] == "risky"
+    assert result["final_level"] == "risky"
+    assert result["cross_check"]["status"] == "mismatch"
+    assert {"LABOR_BREAK", "LABOR_WEEKLY_HOLIDAY"} <= set(result["cross_check"]["engine_only"])
+    assert {c["rule_code"] for c in result["final"]["cards"]} >= {"LABOR_MIN_WAGE", "LABOR_PENALTY", "LABOR_BREAK"}

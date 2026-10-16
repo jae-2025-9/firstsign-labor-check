@@ -17,6 +17,7 @@ from functools import lru_cache
 from openai import OpenAI
 
 from config import (
+    AGENT_ATTEMPTS,
     AGENT_TIMEOUT_SECONDS,
     HTTP_TIMEOUT_SECONDS,
     UPSTAGE_API_KEY,
@@ -57,8 +58,16 @@ def get_client() -> OpenAI:
 
 class AgentError(RuntimeError):
     """
-    Studio 에이전트 실행 실패
+    Studio 에이전트 실행 실패. retryable이면 Job을 새로 만들어 다시 시도해도 된다.
     """
+
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+# Studio가 일시 오류로 돌려주는 코드. 같은 입력으로 Job을 다시 만들면 성공하는 경우가 많다.
+RETRYABLE_ERROR_CODES = ("model_request_error", "server_error", "rate_limit", "timeout", "internal")
 
 
 ##################################################
@@ -135,7 +144,8 @@ class AgentClient:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise AgentError(f"{self.name} 응답이 {AGENT_TIMEOUT_SECONDS}초 안에 끝나지 않았습니다.")
-            client = get_client().with_options(timeout=min(HTTP_TIMEOUT_SECONDS, max(remaining, 1.0)))
+            # 남은 시간이 지난 뒤 SDK가 재시도를 시작하지 않게 폴링 조회는 재시도를 끈다
+            client = get_client().with_options(timeout=min(HTTP_TIMEOUT_SECONDS, max(remaining, 1.0)), max_retries=0)
             return client.responses.retrieve(job_id, include=["last"])
 
         response = retrieve()
@@ -155,8 +165,12 @@ class AgentClient:
 
         if response.status == "failed":
 
+            error = getattr(response, "error", None)
+            code = str(getattr(error, "code", "") or "")
+
             raise AgentError(
-                f"{self.name} 실행 실패: {getattr(response, 'error', None) or '원인 미상'}"
+                f"{self.name} 실행 실패: {getattr(error, 'message', None) or error or '원인 미상'}",
+                retryable=any(word in code for word in RETRYABLE_ERROR_CODES)
             )
 
         if response.status != "completed":
@@ -219,15 +233,23 @@ class AgentClient:
         찾을 때 쓴다.
         """
 
-        print("-" * 60)
-        print(f"[{self.name}] Create Job")
-        print("-" * 60)
+        for attempt in range(1, AGENT_ATTEMPTS + 1):
 
-        job_id = self.create_job(file_id)
+            print("-" * 60)
+            print(f"[{self.name}] Create Job (시도 {attempt}/{AGENT_ATTEMPTS})")
+            print("-" * 60)
 
-        print(f"[{self.name}] Job ID : {job_id}")
+            job_id = self.create_job(file_id)
 
-        response = self.wait_until_complete(job_id)
+            print(f"[{self.name}] Job ID : {job_id}")
+
+            try:
+                response = self.wait_until_complete(job_id)
+                break
+            except AgentError as error:
+                if not error.retryable or attempt == AGENT_ATTEMPTS:
+                    raise
+                print(f"[{self.name}] 일시 오류로 다시 시도합니다: {error}")
 
         result = self.parse_result(response)
 

@@ -1,12 +1,12 @@
 {
   "kind": "studio.workflow-config-draft",
   "schemaVersion": 4,
-  "exportedAt": "2026-10-16T10:16:05.554Z",
+  "exportedAt": "2026-10-16T13:46:28.071Z",
   "exportedFrom": {
-    "workflowId": "agt_4GJMgpjwGtoHseqQS96mhj",
+    "workflowId": "agt_UX6eLeD4V5hPB6wMn8MWtP",
     "workflowName": "알바 안심 체크 - Criteria Agent",
-    "configId": "cfg_jyoRnqE3fdZETF9QPjZCFZ",
-    "configVer": 2
+    "configId": "cfg_STqbANqTK4CPkpUmrzUXSm",
+    "configVer": 1
   },
   "workflowConfig": {
     "workflow_name": "알바 안심 체크 - Criteria Agent",
@@ -51,7 +51,7 @@
                     "type": "string",
                     "description": "'필수 기재사항' 절에 나열된 항목명을 항목마다 하나씩 추출한다. 번호, 불릿 기호, 괄호 안의 법령 표기는 제외하고 항목명만 쓴다. 없으면 빈 목록으로 둔다."
                   },
-                  "description": ""
+                  "description": "required items"
                 },
                 "min_wage_hourly": {
                   "type": "number",
@@ -63,7 +63,7 @@
                     "type": "string",
                     "description": "기준서에 인용된 법령 조문을 인용마다 하나씩 추출한다(예: 근로기준법 제17조, 최저임금법 제6조). 조문 번호까지 포함해 쓴다. 없으면 빈 목록으로 둔다."
                   },
-                  "description": ""
+                  "description": "legal basis"
                 },
                 "min_wage_hourly_2027": {
                   "type": "number",
@@ -101,6 +101,8 @@
               }
             }
           },
+          "mode": "standard",
+          "modelName": "",
           "schemaLayout": {
             "version": 1,
             "columns": [
@@ -155,17 +157,13 @@
               }
             ]
           },
-          "mode": "standard",
-          "modelName": "",
-          "nodeMode": "extract",
           "manyRows": true,
           "manyRowsThreshold": 50,
           "manyRowsMaxRowsPerBatch": 400,
           "manyRowsMaxConcurrent": 5
         }
       ],
-      "categorySchemaMapping": {},
-      "confidenceThreshold": 0.9676
+      "categorySchemaMapping": {}
     },
     "pipelineEdges": [
       {

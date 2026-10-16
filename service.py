@@ -24,6 +24,7 @@ from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 
 from config import (
+    CRITERIA_FILE,
     FIXTURE_DIR,
     MAX_UPLOAD_MB,
     RUNS_DIR,
@@ -34,7 +35,7 @@ from config import (
 )
 from agent_client import AgentError
 from app import CriteriaError, criteria_source_codes, normalize_review, run_workflow
-from file_manager import load_json
+from file_manager import file_sha256, load_json
 from review_builder import build_review_input, contract_rows
 from rules import (
     compute_facts,
@@ -47,15 +48,20 @@ from rules import (
 MAX_PAGES = 20
 
 
-@lru_cache(maxsize=1)
-def source_codes() -> frozenset[str] | None:
-    """
-    고정 기준서 PDF 원문의 규칙 코드 (한 번만 읽는다)
-    """
+@lru_cache(maxsize=4)
+def source_codes_for(digest: str) -> frozenset[str] | None:
 
-    codes = criteria_source_codes()
+    codes = criteria_source_codes(CRITERIA_FILE)
 
     return frozenset(codes) if codes else None
+
+
+def source_codes() -> frozenset[str] | None:
+    """
+    기준서 PDF 원문의 규칙 코드. PDF 내용 해시로 캐시해 기준서를 바꾸면 다시 읽는다.
+    """
+
+    return source_codes_for(file_sha256(CRITERIA_FILE))
 
 
 ##################################################
@@ -222,6 +228,10 @@ def run_review_service(
             review = engine_review(engine)
 
         agent_level = review["review_level"] if (review and source != "rules") else None
+
+        if source == "agent" and review is not None and agent_level is None:
+            # 에이전트가 답은 했지만 분류를 확인할 수 없음. 화면에 에이전트 평가로 표시하지 않는다.
+            source = "agent_unclassified"
         check = cross_check(agent_level, review["matched_rules"] if review else [], engine)
         final = final_view(review, engine, agent_level, check) if review else None
 

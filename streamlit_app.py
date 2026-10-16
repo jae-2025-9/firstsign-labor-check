@@ -249,6 +249,7 @@ SOURCE_NOTES = {
     "agent": "Upstage Studio 평가 에이전트 + 규칙 계산 교차 검증",
     "recorded": "Upstage Studio 평가 에이전트 저장 결과 재생 + 규칙 계산 교차 검증",
     "rules": "데모: 규칙 계산 결과 (평가 에이전트 미연결)",
+    "agent_unclassified": "평가 에이전트의 분류를 확인하지 못해 규칙 계산 결과로 표시",
 }
 
 
@@ -308,6 +309,7 @@ def render_cross_check(result: dict):
         return
 
     agent, engine = check["agent_level"], check["engine_level"]
+    engine_label = LEVEL_LABELS.get(engine, "판정 보류")
 
     if review.get("level_conflict"):
         html_block(
@@ -316,23 +318,32 @@ def render_cross_check(result: dict):
             f"결과 스키마의 review_level은 {esc(LEVEL_LABELS[review['schema_level']])}입니다. 더 엄격한 쪽을 썼습니다.</div>"
         )
 
-    if agent is None:
+    if check["status"] == "unavailable":
         html_block(
             '<div class="fs-box amber"><b>평가 에이전트의 분류를 찾지 못했습니다</b>'
-            "응답에서 Classify 결과와 review_level을 찾지 못해 규칙 계산 결과만으로 등급을 표시합니다.</div>"
+            "응답에서 Classify 결과와 review_level을 찾지 못해 규칙 계산 결과로 표시합니다. 교차 검증은 하지 못했습니다.</div>"
         )
         return
 
-    if not result["final"]["disagree"]:
+    if check["status"] == "match":
         html_block(
             f'<div class="fs-box green"><b>교차 검증 일치</b>평가 에이전트({esc(LEVEL_LABELS[agent])})와 '
-            f'규칙 계산({esc(LEVEL_LABELS.get(engine, "판정 보류"))})의 등급과 해당 규칙이 같습니다.</div>'
+            f'규칙 계산({esc(engine_label)})의 등급과 해당 규칙이 같습니다.</div>'
+        )
+        return
+
+    if check["status"] == "partial":
+        names = ", ".join(esc(RULE_TITLES.get(c, c)) for c in check["undetermined"])
+        html_block(
+            '<div class="fs-box slate"><b>교차 검증 일부만 완료</b>'
+            f"규칙 계산이 {len(check['undetermined'])}개 규칙({names})을 판단하지 못했습니다. "
+            f"그 규칙은 평가 에이전트({esc(LEVEL_LABELS[agent])})의 판단만 반영했고, 나머지 규칙에서는 두 결과가 같습니다.</div>"
         )
         return
 
     lines = [
         f"평가 에이전트: <b style='display:inline'>{esc(LEVEL_LABELS[agent])}</b> · "
-        f"규칙 계산: <b style='display:inline'>{esc(LEVEL_LABELS.get(engine, '판정 보류'))}</b>"
+        f"규칙 계산: <b style='display:inline'>{esc(engine_label)}</b>"
     ]
 
     if check["agent_only"]:

@@ -1,0 +1,29 @@
+{
+    "employer_name": "스피드편의점 세종점",
+    "employee_name": "정하늘",
+    "contract_start_date": "2026-10-10",
+    "contract_end_date": "2027-04-09",
+    "workplace": "세종특별자치시 대학로 77",
+    "job_description": "상품 진열, 계산, 매장 청소",
+    "work_days": [
+        "화",
+        "목",
+        "토"
+    ],
+    "work_start_time": "18:00",
+    "work_end_time": "23:00",
+    "break_time": "없음 (근로시간 5시간)",
+    "weekly_holiday": "주휴일 없음",
+    "wage_type": "시급",
+    "wage_amount": 9500,
+    "wage_payment_date": "매월 말일",
+    "wage_payment_method": "계좌이체",
+    "annual_leave_clause": "연차유급휴가는 회사 사정에 따라 협의한다.",
+    "social_insurance": "고용보험, 산재보험 가입",
+    "copy_delivery_clause": "",
+    "special_terms": [
+        "근로자가 1년 이내에 퇴사할 경우 위약금 1,000,000원을 지급한다.",
+        "또한 손해가 발생하면 임금에서 공제할 수 있다."
+    ],
+    "is_signed": true
+}

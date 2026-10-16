@@ -42,7 +42,10 @@ REVIEW_AGENT_ID = os.getenv("REVIEW_AGENT_ID", "").strip()
 REVIEW_CONFIG_ID = os.getenv("REVIEW_CONFIG_ID", "").strip()
 
 # 에이전트 Job 하나를 기다리는 최대 시간(초). 넘기기 전에 완료되면 결과를 쓴다.
-AGENT_TIMEOUT_SECONDS = int(os.getenv("AGENT_TIMEOUT_SECONDS", "180"))
+AGENT_TIMEOUT_SECONDS = int(os.getenv("AGENT_TIMEOUT_SECONDS", "420"))
+
+# Studio 일시 오류(model_request_error 등) 때 Job을 새로 만들어 시도하는 최대 횟수
+AGENT_ATTEMPTS = max(1, int(os.getenv("AGENT_ATTEMPTS", "3")))
 
 # 업로드·Job 생성·상태 조회 HTTP 요청 하나의 최대 시간(초)
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))

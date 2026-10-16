@@ -97,12 +97,12 @@ KNOWN_CONDITIONS = {
 # KNOWN_CONDITIONS 문장이 쓰인 기준 연도
 KNOWN_BASE_YEAR = 2026
 
-AMOUNT_PATTERN = re.compile(r"\d{1,3}(?:\s*,\s*\d{3})+\s*원|\d{4,}\s*원")
-
 # 2026-12-10 시행 근로기준법 제54조 개정: 정확히 4시간 근무에 근로자가 명시적으로 요청하면 휴게 없이 가능
 BREAK_EXCEPTION_START = date(2026, 12, 10)
 
-EXPLICIT_NO_BREAK_PATTERN = re.compile(r"요청[^.]{0,20}(?:미사용|사용하지|없이|생략)|(?:미사용|사용하지|없이|생략)[^.]{0,20}요청")
+# 근로자가 휴게 미사용을 요청했다는 긍정 문장. 요청 주체가 근로자가 아니거나 부정이면 예외로 보지 않는다.
+EXPLICIT_NO_BREAK_PATTERN = re.compile(r"근로자\s*(?:가|는|이|본인이|의)[^.()]{0,30}?(?:미사용|사용하지\s*않|없이|생략)[^.()]{0,15}?요청(?:함|하였|했|한다|하여|에\s*따라)")
+NO_REQUEST_PATTERN = re.compile(r"요청\s*하지|요청\s*안|요청\s*없|요청이\s*없|(?:사용자|사업주|회사)\s*(?:가|는|이)[^.()]{0,30}?요청")
 
 # 필수 기재사항 6가지와 기준서 항목명에서 찾을 핵심어
 REQUIRED_TERM_KEYS = {
@@ -139,6 +139,10 @@ UNDECIDED_PATTERN = re.compile(r"미정|추후|결정\s*되지|정하지\s*않|�
 # 1) 임금에서 떼는 조항: 근로자 부담이 문장 구조로 분명하다
 WAGE_DEDUCTION_PATTERN = re.compile(r"(?:임금|급여|월급|시급|일당)\s*(?:에서|을|를)?\s*(?:공제|차감|감액|삭감|몰수)")
 
+# 임금 공제의 목적. 손해·위약 목적이면 불리한 조항, 세금·보험료 정산이면 정상 공제다.
+PENALTY_PURPOSE_PATTERN = re.compile(r"손해|위약|배상|변상|벌금|벌칙|지각|결근|파손|분실|실수|과실|퇴사")
+STATUTORY_DEDUCTION_PATTERN = re.compile(r"세금|소득세|주민세|지방세|원천징수|보험료|4대\s*보험|사회보험|고용보험|건강보험|국민연금|산재보험")
+
 # 2) 근로자가 주어인 위약금·배상 조항
 WORKER_PAYS_PATTERN = re.compile(
     r"(?:근로자|을)\s*(?:은|는|이|가)\s*[^.]{0,40}?(?:위약금|위약|손해\s*배상|배상|변상|벌금)[^.]{0,20}?(?:지급|배상|변상|부담|물어|납부)"
@@ -165,6 +169,20 @@ COPY_POSITIVE_PATTERN = re.compile(
 )
 
 COPY_HINT_PATTERN = re.compile(r"교부|사본|근로자\s*에게\s*(?:1부|한\s*부)")
+
+# 교부 행위 자체를 부정하는 표현만 거부로 본다 ("관계없이 교부한다"는 거부가 아니다)
+COPY_REFUSAL_PATTERN = re.compile(
+    r"교부\s*(?:를|는)?\s*하지|교부하지|교부\s*안|미교부|교부\s*불가"
+    r"|교부(?:할|하는)?\s*의무(?:는|가)?\s*없|(?:주|제공하|전달하)지\s*(?:않|아니)"
+)
+
+# 상태값만 적힌 경우 ("없음", "주휴일 없음", "미정", "추후 결정", "협의")
+FIELD_PREFIX = r"(?:주휴일|휴일|연차\s*유급\s*휴가|연차|임금\s*지급\s*방법|지급\s*방법|임금\s*지급일|지급일|근무\s*장소|업무(?:의)?\s*내용)?\s*(?:은|는|:)?\s*"
+ABSENT_ONLY_PATTERN = re.compile(rf"^{FIELD_PREFIX}(?:없음|없다|없습니다|해당\s*(?:사항\s*)?없음|미부여|미지정|미기재)\s*\.?$")
+UNDECIDED_ONLY_PATTERN = re.compile(rf"^{FIELD_PREFIX}(?:미정|추후\s*\S*|협의|추후\s*협의|협의\s*(?:후|하여)?\s*(?:결정|정함)|결정\s*예정|정하지\s*않음)\s*\.?$")
+
+# 연차를 주거나 법에 따른다는 표현이 있으면 '사용일 협의'가 함께 있어도 적힌 것으로 본다
+ANNUAL_GRANT_PATTERN = re.compile(r"부여|발생|사용할\s*수|근로기준법|제\s*60\s*조|법정|법에\s*따")
 
 DAYS = "월화수목금토일"
 
@@ -591,18 +609,19 @@ def condition_shape(sentence: str, base_year: int | None = None, allow_amounts: 
     """
     공백·줄바꿈·문장부호를 지운 조건 문장.
 
+    공백과 줄바꿈을 먼저 지운 뒤 비교한다(PDF 표 셀의 "2026\n년", "1\n0,320" 대응).
     allow_amounts이면 금액을 AMOUNT로, 기준 연도와 다음 해를 BASEYEAR·NEXTYEAR로 바꿔
     해마다 금액만 바뀌는 최저임금 규칙을 같은 조건으로 본다. 그 밖의 숫자·낱말은 그대로 비교한다.
     """
 
-    s = sentence
+    s = re.sub(r"\s+", "", sentence)
 
     if allow_amounts:
-        s = AMOUNT_PATTERN.sub("AMOUNT원", s)
+        s = re.sub(r"\d{1,3}(?:,\d{3})+원|\d{4,}원", "AMOUNT원", s)
         if base_year:
             s = s.replace(f"{base_year + 1}년", "NEXTYEAR년").replace(f"{base_year}년", "BASEYEAR년")
 
-    return re.sub(r"[\s\W_]+", "", s)
+    return re.sub(r"[\W_]+", "", s)
 
 
 
@@ -823,10 +842,11 @@ def classify_penalty_clauses(contract) -> tuple[list[str], list[str]]:
     """
     특약을 (불리한 조항, 의미를 확정할 수 없는 조항)으로 나눈다.
 
-    부담 주체와 의미가 문장 구조로 분명한 두 형태만 불리한 조항으로 확정한다.
-    - 임금에서 공제·차감·감액하는 조항
+    부담 주체·목적이 문장 구조로 분명한 두 형태만 불리한 조항으로 확정한다.
+    - 손해·위약·지각 같은 목적으로 임금에서 공제·차감하는 조항
     - 근로자가 주어로 위약금·배상금을 지급·부담하는 조항
-    부정·금지 표현이 있거나, 회사가 주는 문장이거나, 핵심어만 있으면 판단을 보류한다.
+    세금·보험료만 떼는 조항은 정상 공제로 본다. 목적이 섞였거나 없거나, 부정·금지 표현이 있거나,
+    회사가 주는 문장이거나, 핵심어만 있으면 판단을 보류한다.
     """
 
     hits, unclear = [], []
@@ -834,11 +854,20 @@ def classify_penalty_clauses(contract) -> tuple[list[str], list[str]]:
     for clause in (str(item) for item in as_list(contract.get("special_terms"))):
 
         negated = NEGATION_PATTERN.search(clause)
-        clear = WAGE_DEDUCTION_PATTERN.search(clause) or WORKER_PAYS_PATTERN.search(clause)
+        employer_pays = EMPLOYER_PAYS_PATTERN.search(clause)
+        statutory = STATUTORY_DEDUCTION_PATTERN.search(clause)
+        purpose = PENALTY_PURPOSE_PATTERN.search(clause)
+        deduction = WAGE_DEDUCTION_PATTERN.search(clause)
+        worker_pays = WORKER_PAYS_PATTERN.search(clause)
 
-        if clear and not negated and not EMPLOYER_PAYS_PATTERN.search(clause):
+        if deduction and statutory and not purpose and not worker_pays:
+            continue
+
+        clear = (deduction and purpose and not statutory) or worker_pays
+
+        if clear and not negated and not employer_pays:
             hits.append(clause)
-        elif clear or PENALTY_HINT_PATTERN.search(clause) or RESIGN_PATTERN.search(clause):
+        elif deduction or worker_pays or PENALTY_HINT_PATTERN.search(clause) or RESIGN_PATTERN.search(clause):
             unclear.append(clause)
 
     return hits, unclear
@@ -859,55 +888,80 @@ def check_penalty(contract, facts):
     return False, "위약금·손해배상·임금 공제 조항이 없습니다.", text(contract.get("special_terms")) or "없음", "해당 조항 없음"
 
 
+def field_core(value) -> str:
+    """
+    괄호 안 보충 설명을 뺀 값. "매주 일요일 (변경 없음)" → "매주 일요일"
+    """
+
+    core = re.sub(r"\([^)]*\)", " ", text(value)).strip()
+
+    return core or text(value)
+
+
+def field_state(value) -> str:
+    """
+    blank(비어 있음) / absent(상태값 "없음") / undecided(상태값 "미정"·"협의") / written(그 밖의 기재)
+    """
+
+    if is_blank(value) or not text(value):
+        return "blank"
+
+    core = field_core(value)
+
+    if ABSENT_ONLY_PATTERN.match(core):
+        return "absent"
+
+    if UNDECIDED_ONLY_PATTERN.match(core):
+        return "undecided"
+
+    return "written"
+
+
 def required_missing(contract, facts: dict | None = None) -> tuple[list[str], list[str]]:
     """
     필수 기재사항 중 (적혀 있지 않은 항목, 적힌 것인지 확정할 수 없는 항목)
 
-    "미정", "추후 결정", "협의한다"처럼 정해지지 않은 값은 적힌 것으로 보지 않는다.
+    값 전체가 상태값("없음", "미정", "추후 결정", "협의")일 때만 적히지 않은 것으로 본다.
+    "사용일은 협의하여 정한다", "매주 일요일 (변경 없음)"처럼 설명 문장 안의 낱말로는 판단하지 않는다.
     휴일·연차의 "해당 없음"·"없음"은 1주 15시간 미만일 때만 적힌 것으로 본다(기준서 v2).
-    1주 근로시간을 계산하지 못했으면 그 두 항목은 확정하지 않는다.
     """
 
     facts = facts or {}
     weekly = facts.get("weekly_hours")
     missing, unclear = [], []
 
-    def written(field: str) -> bool:
-        value = text(contract.get(field))
-        return bool(value) and not UNDECIDED_PATTERN.search(value)
+    def state(field: str) -> str:
+        return field_state(contract.get(field))
 
     if is_blank(contract.get("wage_amount")):
         missing.append("임금(금액)")
 
-    if not written("wage_type"):
-        missing.append("임금(시급·일급·월급 구분)")
-
-    if not written("wage_payment_date"):
-        missing.append("임금지급일")
-
-    if not written("wage_payment_method") or NONE_PATTERN.search(text(contract.get("wage_payment_method"))):
-        missing.append("임금지급방법")
+    for field, name in (("wage_type", "임금(시급·일급·월급 구분)"), ("wage_payment_date", "임금지급일"), ("wage_payment_method", "임금지급방법")):
+        if state(field) != "written":
+            missing.append(name)
 
     if is_blank(contract.get("work_start_time")) or is_blank(contract.get("work_end_time")):
         missing.append("소정근로시간")
 
     for field, name in (("weekly_holiday", "휴일(주휴일)"), ("annual_leave_clause", "연차유급휴가")):
 
-        value = text(contract.get(field))
+        current = state(field)
 
-        if not written(field):
+        if current in ("blank", "undecided"):
             missing.append(name)
-        elif NONE_PATTERN.search(value):
+        elif current == "absent":
             if weekly is None:
                 unclear.append(name)
             elif weekly >= 15:
                 missing.append(name)
+        elif field == "annual_leave_clause" and UNDECIDED_PATTERN.search(field_core(contract.get(field))) \
+                and not ANNUAL_GRANT_PATTERN.search(field_core(contract.get(field))):
+            # "회사 사정에 따라 협의한다"처럼 연차를 준다는 말 없이 협의만 적힌 경우
+            unclear.append(name)
 
-    if not written("workplace"):
-        missing.append("근무장소")
-
-    if not written("job_description"):
-        missing.append("업무의 내용")
+    for field, name in (("workplace", "근무장소"), ("job_description", "업무의 내용")):
+        if state(field) != "written":
+            missing.append(name)
 
     if is_blank(contract.get("contract_start_date")):
         missing.append("근로계약기간")
@@ -951,7 +1005,8 @@ def check_break(contract, facts):
 
     if work == 240 and rest == 0:
 
-        explicit = bool(EXPLICIT_NO_BREAK_PATTERN.search(text(contract.get("break_time"))))
+        break_text = text(contract.get("break_time"))
+        explicit = bool(EXPLICIT_NO_BREAK_PATTERN.search(break_text)) and not NO_REQUEST_PATTERN.search(break_text)
         start = to_date(contract.get("contract_start_date"))
 
         if explicit and start is not None and start >= BREAK_EXCEPTION_START:
@@ -968,11 +1023,22 @@ def check_break(contract, facts):
     return True, f"1일 근로시간 {work / 60:g}시간에는 {standard}이 필요한데 휴게가 {rest}분입니다.", current, standard
 
 
-def holiday_specified(contract) -> bool:
+def holiday_specified(contract) -> bool | None:
+    """
+    주휴일이 정해져 있는지. True(요일이 적힘) / False(비어 있거나 "없음") / None(뜻을 확정할 수 없음)
+    """
 
-    value = text(contract.get("weekly_holiday"))
+    current = field_state(contract.get("weekly_holiday"))
 
-    return bool(value) and not NONE_PATTERN.search(value)
+    if current in ("blank", "absent", "undecided"):
+        return False
+
+    core = field_core(contract.get("weekly_holiday"))
+
+    if re.search(r"[월화수목금토일]\s*요일|(?<![가-힣])[월화수목금토일](?![가-힣])|매주", core):
+        return True
+
+    return None
 
 
 def check_weekly_holiday(contract, facts):
@@ -980,12 +1046,16 @@ def check_weekly_holiday(contract, facts):
     weekly = facts["weekly_hours"]
     current = text(contract.get("weekly_holiday")) or "(비어 있음)"
     standard = "주 15시간 이상이면 주휴일 기재"
+    specified = holiday_specified(contract)
 
-    if holiday_specified(contract):
+    if specified:
         return False, "주휴일이 적혀 있습니다.", current, standard
 
     if weekly is not None and weekly < 15:
         return False, f"1주 소정근로시간이 {weekly:g}시간으로 15시간 미만이라 해당 없습니다.", current, standard
+
+    if specified is None:
+        return None, "주휴일 문구에 요일이 없어 주휴일이 정해졌는지 코드로 확정할 수 없습니다.", current, standard
 
     if weekly is None:
         return None, "1주 소정근로시간을 계산하지 못했는데 주휴일이 정해져 있지 않습니다. 15시간 이상이면 해당합니다.", current, standard
@@ -995,7 +1065,9 @@ def check_weekly_holiday(contract, facts):
 
 def copy_clause_status(contract) -> str:
     """
-    교부 문구 상태: ok(긍정형이 분명함) / missing(비어 있음) / negated(부정 표현) / unclear(뜻을 확정할 수 없음)
+    교부 문구 상태: ok(긍정형이 분명함) / missing(비어 있음) / negated(교부 행위를 부정) / unclear(뜻을 확정할 수 없음)
+
+    "관계없이", "없이"처럼 교부 행위를 꾸미지 않는 부정어는 거부로 보지 않는다.
     """
 
     clause = text(contract.get("copy_delivery_clause"))
@@ -1003,10 +1075,10 @@ def copy_clause_status(contract) -> str:
     if not clause:
         return "missing"
 
-    if NEGATION_PATTERN.search(clause) and COPY_HINT_PATTERN.search(clause):
+    if COPY_REFUSAL_PATTERN.search(clause):
         return "negated"
 
-    if COPY_POSITIVE_PATTERN.search(clause) and not NEGATION_PATTERN.search(clause):
+    if COPY_POSITIVE_PATTERN.search(clause):
         return "ok"
 
     if not COPY_HINT_PATTERN.search(clause):
@@ -1235,6 +1307,12 @@ def cross_check(agent_level: str | None, agent_rules, engine: dict) -> dict:
     """
     평가 에이전트 결과와 규칙 계산 결과를 비교한다.
 
+    status:
+    - match: 둘 다 등급을 냈고 등급과 (코드가 판단한) 해당 규칙이 같다
+    - mismatch: 등급이나 해당 규칙이 다르다
+    - partial: 에이전트 등급은 있지만 규칙 계산이 일부 규칙을 판단하지 못해 끝까지 비교하지 못했다
+    - unavailable: 에이전트 분류가 없다
+
     agent_codes는 기준서에 있는 규칙 중 에이전트가 해당한다고 본 전체 목록이다.
     agent_only / engine_only는 코드가 판단한 규칙만 비교한다.
     """
@@ -1243,15 +1321,28 @@ def cross_check(agent_level: str | None, agent_rules, engine: dict) -> dict:
     decided = all_codes - set(engine["undetermined_codes"])
     agent_codes = rule_codes_in(agent_rules) & all_codes
     engine_codes = set(engine["hit_codes"])
+    agent_only = sorted((agent_codes & decided) - engine_codes)
+    engine_only = sorted(engine_codes - agent_codes)
+
+    if agent_level is None:
+        status = "unavailable"
+    elif agent_only or engine_only or (engine["level"] is not None and agent_level != engine["level"]):
+        status = "mismatch"
+    elif engine["level"] is None:
+        status = "partial"
+    else:
+        status = "match"
 
     return {
+        "status": status,
         "agent_level": agent_level,
         "engine_level": engine["level"],
-        "level_match": agent_level is not None and agent_level == engine["level"],
+        "level_match": status == "match",
         "agent_codes": sorted(agent_codes),
-        "agent_only": sorted((agent_codes & decided) - engine_codes),
-        "engine_only": sorted(engine_codes - agent_codes),
+        "agent_only": agent_only,
+        "engine_only": engine_only,
         "agent_on_undetermined": sorted(agent_codes - decided),
+        "undetermined": sorted(all_codes - decided),
     }
 
 
@@ -1326,9 +1417,9 @@ def final_view(review: dict, engine: dict, agent_level: str | None, check: dict)
     - 지적 규칙(카드): 규칙 계산이 해당한다고 본 규칙 + 에이전트가 해당한다고 본 규칙
     - 등급: 에이전트 등급, 규칙 계산 등급, 카드들의 기준서 분류 중 가장 엄격한 것.
       확정된 지적보다 낮은 등급은 나오지 않는다.
-    - 완결성: 코드가 판단 보류한 규칙을 에이전트 등급이 덮지 못하면(에이전트 분류 없음) incomplete
-    - 요약: 최종 등급이 에이전트 등급과 같고 지적도 일치할 때만 에이전트 요약을 쓰고,
-      아니면 최종 판정으로 다시 쓴다. 에이전트 원문은 agent_summary로 따로 둔다.
+    - incomplete: 등급을 확정할 판단(에이전트 분류 또는 규칙 계산 전체 판정)이 없음.
+      교차 검증이 끝까지 됐는지는 check["status"]가 따로 알려 준다.
+    - 요약: 항상 최종 구조화 결과로 다시 쓴다. 에이전트가 쓴 요약은 agent_summary로 따로 둔다.
     """
 
     final_codes = set(engine["hit_codes"]) | set(check["agent_codes"])
@@ -1356,19 +1447,15 @@ def final_view(review: dict, engine: dict, agent_level: str | None, check: dict)
 
     card_levels = [c["level"] for c in cards if c["level"] in LEVEL_SEVERITY]
     complete_level = agent_level if agent_level is not None else engine["level"]
-    level = more_severe(complete_level, engine["level"], *card_levels)
 
     if complete_level is None:
         # 등급을 확정할 판단이 없다. 확정된 지적이 있으면 그 최소 등급만 보여 주고 보류를 알린다.
         level = more_severe(*card_levels)
+    else:
+        level = more_severe(complete_level, engine["level"], *card_levels)
 
     incomplete = complete_level is None
-    disagree = bool(check["agent_only"] or check["engine_only"]) or (agent_level is not None and agent_level != level)
-
-    if agent_level is not None and not disagree and level == agent_level and review["summary"]:
-        summary = review["summary"]
-    else:
-        summary = compose_summary(engine, cards, level, incomplete=incomplete, agent_level=agent_level)
+    disagree = check["status"] == "mismatch" or (agent_level is not None and agent_level != level)
 
     recommendations = list(review["recommendations"])
     engine_actions = {f["rule_code"]: f["recommended_action"] for f in engine["findings"]}
@@ -1390,7 +1477,7 @@ def final_view(review: dict, engine: dict, agent_level: str | None, check: dict)
     return {
         "level": level,
         "incomplete": incomplete,
-        "summary": summary,
+        "summary": compose_summary(engine, cards, level, incomplete=incomplete, agent_level=agent_level),
         "agent_summary": review["summary"] if agent_level is not None else "",
         "cards": cards,
         # 근로자가 할 일 (에이전트 문장 + 에이전트가 놓친 규칙의 기준서 권장 행동)
