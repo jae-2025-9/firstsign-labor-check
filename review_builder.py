@@ -93,6 +93,9 @@ CONTRACT_LABELS = [
 
 EMPTY = "(비어 있음)"
 
+# 이보다 긴 값은 표 밖 문단으로 적는다
+LONG_VALUE_CHARS = 300
+
 
 ##################################################
 # Helpers
@@ -134,12 +137,26 @@ def yes_no(value) -> str:
 ##################################################
 
 def add_contract(story: list, contract: dict):
+    """
+    표 셀은 페이지를 넘어 나뉘지 않는다. 긴 값(특약 등)은 표에는 안내만 적고
+    표 아래에 문단으로 원문 전체를 적어, 판정 근거를 자르지 않고 PDF 생성도 실패하지 않게 한다.
+    """
 
     story.append(p("1부. 근로계약 정보 (계약서 추출 결과)", HEADING_STYLE))
 
-    rows = [[p(label, CELL_STYLE), p(contract_value(contract, key), CELL_STYLE)] for key, label in CONTRACT_LABELS]
+    rows, long_values = [], []
 
-    table = Table(rows, colWidths=[5.2 * cm, 11.8 * cm])
+    for key, label in CONTRACT_LABELS:
+
+        value = contract_value(contract, key)
+
+        if len(value) > LONG_VALUE_CHARS:
+            long_values.append((label, value))
+            value = "(길어서 표 아래 '긴 항목 원문'에 적음)"
+
+        rows.append([p(label, CELL_STYLE), p(value, CELL_STYLE)])
+
+    table = Table(rows, colWidths=[5.2 * cm, 11.8 * cm], repeatRows=0)
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#CBD5E1")),
         ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F1F5F9")),
@@ -149,6 +166,14 @@ def add_contract(story: list, contract: dict):
     ]))
 
     story.append(table)
+
+    if long_values:
+        story.append(p("긴 항목 원문", HEADING_STYLE))
+        for label, value in long_values:
+            story.append(p(f"{label}:"))
+            for chunk in value.split(" / "):
+                story.append(p(chunk))
+            story.append(Spacer(1, 0.2 * cm))
 
 
 def add_criteria(story: list, criteria: dict):
@@ -162,7 +187,7 @@ def add_criteria(story: list, criteria: dict):
         f"기준서 이름: {summary['name'] or EMPTY}",
         f"적용 버전: {summary['version'] or EMPTY}",
         f"필수 기재사항: {', '.join(summary['required_items']) or EMPTY}",
-        f"최저임금({year}년, 시간급): {won(summary['min_wage_current'])}",
+        f"최저임금({year or '기준'}년, 시간급): {won(summary['min_wage_current'])}",
         f"최저임금({year + 1 if year else '다음'}년, 시간급): {won(summary['min_wage_next'])}",
         f"인용 법령: {', '.join(summary['legal_basis']) or EMPTY}",
     ]
@@ -203,15 +228,22 @@ def add_facts(story: list, facts: dict):
         weekly_text = f"{weekly:g}시간 ({'15시간 이상' if weekly >= 15 else '15시간 미만'})"
 
     hourly = facts["hourly_wage"]
-    hourly_text = "계산 불가" if hourly is None else f"{won(hourly)} ({facts['hourly_basis']})"
+    hourly_text = "계산 불가" if hourly is None else f"{won(hourly)} ({facts['hourly_basis']}, 반올림하지 않은 값)"
+
+    if facts["applicable_min_wage"] is None:
+        applicable = "정하지 못함"
+    else:
+        applicable = f"{facts['applicable_min_wage_year']}년 {won(facts['applicable_min_wage'])}"
+
+    next_start = facts["next_min_wage_start"] or "다음 해 1월 1일"
 
     lines = [
         f"1일 근로시간(휴게 제외): {daily}",
         f"1주 근무일 수: {facts['work_days_per_week'] or '계산 불가'}",
         f"1주 소정근로시간: {weekly_text}",
         f"시급 환산: {hourly_text}",
-        f"계약 시작일 기준 적용 최저임금: {facts['applicable_min_wage_year']}년 {won(facts['applicable_min_wage'])}",
-        f"계약이 {facts['next_min_wage_start']} 이후까지 이어지는지: {yes_no(facts['continues_into_next_year'])}",
+        f"계약 시작일 기준 적용 최저임금: {applicable}",
+        f"계약이 {next_start} 이후까지 이어지는지: {yes_no(facts['continues_into_next_year'])}",
     ]
 
     for line in lines:

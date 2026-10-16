@@ -13,7 +13,7 @@ import json
 import streamlit as st
 
 from config import CRITERIA_FILE, SAMPLES, SAMPLE_DIR, is_live_ready, missing_settings
-from rules import LEVEL_LABELS, LEVEL_SEVERITY, RULE_TITLES, won
+from rules import LEVEL_LABELS, RULE_TITLES, won
 from service import ServiceError, run_review_service
 
 ##################################################
@@ -178,6 +178,12 @@ else:
 
 run = st.button("점검하기", type="primary", use_container_width=True)
 
+# 입력을 바꾸면 이전 결과를 지워 다른 계약서의 결과로 오해하지 않게 한다
+current_input = ("sample", sample_id) if input_mode == "샘플로 체험하기" else ("upload", uploaded.file_id if uploaded else None)
+
+if st.session_state.get("result_input") != current_input:
+    st.session_state.pop("result", None)
+
 
 ##################################################
 # Execute
@@ -223,6 +229,7 @@ if run:
         status.update(label="점검을 마쳤습니다", state="complete", expanded=False)
 
     st.session_state["result"] = result
+    st.session_state["result_input"] = current_input
 
 
 ##################################################
@@ -240,39 +247,43 @@ def render_not_contract(result: dict):
     render_details(result)
 
 
+SOURCE_NOTES = {
+    "agent": "Upstage Studio 평가 에이전트 + 규칙 계산 교차 검증",
+    "recorded": "Upstage Studio 평가 에이전트 저장 결과 재생 + 규칙 계산 교차 검증",
+    "rules": "데모: 규칙 계산 결과 (평가 에이전트 미연결)",
+}
+
+
 def render_summary(result: dict):
 
-    review, facts, engine = result["review"], result["facts"], result["engine"]
-    level = result["final_level"]
-
-    source_note = {
-        "agent": "Upstage Studio 평가 에이전트 결과",
-        "recorded": "Upstage Studio 평가 에이전트 결과 (저장된 실행 결과 재생)",
-        "rules": "데모: 규칙 계산 결과 (평가 에이전트 미연결)",
-    }[result["source"]]
+    final, facts, engine = result["final"], result["facts"], result["engine"]
 
     html_block(
         f"""
         <div class="fs-card">
           <div class="fs-card-head">
-            <div><h3>종합 진단</h3><div class="fs-sub">{esc(source_note)}</div></div>
-            {badge(level)}
+            <div><h3>종합 진단</h3><div class="fs-sub">{esc(SOURCE_NOTES[result["source"]])}</div></div>
+            {badge(final["level"])}
           </div>
-          <p class="fs-summary">{esc(review["summary"] or "요약이 없습니다.")}</p>
+          <p class="fs-summary">{esc(final["summary"] or "요약이 없습니다.")}</p>
         </div>
         """
     )
+
+    if final["level"] is None:
+        st.info("일부 규칙을 판단하지 못해 등급을 정하지 않았습니다. 아래 '판단 보류' 항목을 계약서 원문으로 확인하세요.", icon="⏸️")
 
     col1, col2, col3 = st.columns(3)
 
     hourly, minimum = facts["hourly_wage"], facts["applicable_min_wage"]
 
-    col1.metric(
-        "시급",
-        won(hourly),
-        delta=None if hourly is None or minimum is None else f"{hourly - minimum:+,.0f}원 (최저 {minimum:,.0f}원)",
-        delta_color="normal"
-    )
+    col1.metric("시급", won(hourly))
+
+    if hourly is not None and minimum is not None:
+        gap = hourly - minimum
+        col1.caption(f"{facts['applicable_min_wage_year']}년 최저 {won(minimum)} 대비 {'+' if gap >= 0 else '-'}{won(abs(gap))}")
+    else:
+        col1.caption("적용 최저임금을 정하지 못함")
 
     weekly = facts["weekly_hours"]
     col2.metric(
@@ -282,29 +293,42 @@ def render_summary(result: dict):
     )
     col2.caption("근무일을 읽지 못함" if weekly is None else ("주휴 대상 (15시간 이상)" if weekly >= 15 else "15시간 미만"))
 
-    col3.metric("해당한 점검 규칙", f"{len(engine['hit_codes'])}개")
+    col3.metric("해당한 점검 규칙", f"{len(final['cards'])}개")
     col3.caption(f"기준서 규칙 {len(engine['findings'])}개 중")
 
 
 def render_cross_check(result: dict):
 
-    check = result["cross_check"]
+    check, review = result["cross_check"], result["review"]
 
     if result["source"] == "rules":
         return
 
     agent, engine = check["agent_level"], check["engine_level"]
-    same_rules = not check["agent_only"] and not check["engine_only"]
 
-    if agent and check["level_match"] and same_rules:
+    if review.get("level_conflict"):
+        html_block(
+            '<div class="fs-box amber"><b>⚠️ 평가 에이전트 내부 결과가 다릅니다</b>'
+            f"Classify 분류는 {esc(LEVEL_LABELS[review['classify_level']])}, "
+            f"결과 스키마의 review_level은 {esc(LEVEL_LABELS[review['schema_level']])}입니다. 더 엄격한 쪽을 썼습니다.</div>"
+        )
+
+    if agent is None:
+        html_block(
+            '<div class="fs-box amber"><b>⚠️ 평가 에이전트의 분류를 찾지 못했습니다</b>'
+            "응답에서 Classify 결과와 review_level을 찾지 못해 규칙 계산 결과만으로 등급을 표시합니다.</div>"
+        )
+        return
+
+    if not result["final"]["disagree"]:
         html_block(
             f'<div class="fs-box green"><b>교차 검증 일치</b>평가 에이전트({esc(LEVEL_LABELS[agent])})와 '
-            f'규칙 계산({esc(LEVEL_LABELS[engine])})의 등급과 해당 규칙이 같습니다.</div>'
+            f'규칙 계산({esc(LEVEL_LABELS.get(engine, "판정 보류"))})의 등급과 해당 규칙이 같습니다.</div>'
         )
         return
 
     lines = [
-        f"평가 에이전트: <b style='display:inline'>{esc(LEVEL_LABELS.get(agent, '분류를 찾지 못함'))}</b> · "
+        f"평가 에이전트: <b style='display:inline'>{esc(LEVEL_LABELS[agent])}</b> · "
         f"규칙 계산: <b style='display:inline'>{esc(LEVEL_LABELS.get(engine, '판정 보류'))}</b>"
     ]
 
@@ -314,14 +338,14 @@ def render_cross_check(result: dict):
     if check["engine_only"]:
         lines.append("규칙 계산만 지적: " + ", ".join(esc(RULE_TITLES.get(c, c)) for c in check["engine_only"]))
 
-    lines.append("사용자 보호를 위해 둘 중 더 엄격한 등급을 표시합니다. 해당 항목은 계약서 원문으로 직접 확인하세요.")
+    lines.append("사용자 보호를 위해 둘 중 더 엄격한 등급과 두 쪽의 지적을 모두 표시합니다. 해당 항목은 계약서 원문으로 직접 확인하세요.")
 
     html_block('<div class="fs-box amber"><b>⚠️ 교차 검증 결과가 다릅니다</b>' + "<br>".join(lines) + "</div>")
 
 
 def render_missing(result: dict):
 
-    items = list(dict.fromkeys(result["engine"]["missing_items"] + result["review"]["missing_items"]))
+    items = result["final"]["missing_items"]
 
     if not items:
         return
@@ -330,29 +354,38 @@ def render_missing(result: dict):
     html_block(f'<div class="fs-box amber"><b>계약서에 없는 항목</b>{chips}</div>')
 
 
+SOURCE_LABELS = {
+    "both": "평가 에이전트 · 규칙 계산 모두 지적",
+    "agent": "평가 에이전트만 지적",
+    "engine": "규칙 계산만 지적",
+}
+
+
 def render_rules(result: dict):
 
-    engine = result["engine"]
-    agent_codes = set(result["cross_check"]["agent_only"])
-    findings = [f for f in engine["findings"] if f["hit"] or f["rule_code"] in agent_codes]
-    findings.sort(key=lambda f: -LEVEL_SEVERITY.get(f["level"], 0))
+    final = result["final"]
+    cards = final["cards"]
 
-    st.subheader(f"2. 점검 규칙에 해당한 항목 ({len(findings)}건)")
+    st.subheader(f"2. 점검 규칙에 해당한 항목 ({len(cards)}건)")
 
-    if not findings:
-        html_block('<div class="fs-box green">점검 기준서의 규칙에 해당하는 항목이 없습니다.</div>')
+    if not cards:
+        if final["level"] == "safe":
+            html_block('<div class="fs-box green">점검 기준서의 규칙에 해당하는 항목이 없습니다.</div>')
+        else:
+            st.write("해당한다고 확정한 규칙은 없습니다.")
 
-    for f in findings:
+    for f in cards:
 
-        line = LEVEL_STYLE[f["level"]]["line"]
-        quote = f'<p class="fs-quote">“{esc(f["clause"])}”</p>' if f["clause"] and f["rule_code"] not in ("LABOR_MIN_WAGE", "LABOR_MIN_WAGE_NEXT") else ""
-        only_agent = '<div class="fs-sub">규칙 계산에서는 통과했지만 평가 에이전트가 지적한 항목입니다.</div>' if not f["hit"] else ""
+        style = LEVEL_STYLE.get(f["level"])
+        line = style["line"] if style else "#94a3b8"
+        quote = f'<p class="fs-quote">“{esc(f["clause"])}”</p>' if f["clause"] else ""
+        origin = f'<div class="fs-sub">{esc(SOURCE_LABELS[f["source"]])}</div>' if result["source"] != "rules" else ""
 
         html_block(
             f"""
             <div class="fs-clause" style="border-left-color:{line}">
               <div class="fs-card-head"><h4>{esc(f["title"])}</h4>{badge(f["level"], small=True)}</div>
-              {only_agent}
+              {origin}
               {quote}
               <p class="fs-reason">{esc(f["reason"])}</p>
               <dl class="fs-dl">
@@ -366,40 +399,44 @@ def render_rules(result: dict):
             """
         )
 
-    undetermined = [f for f in engine["findings"] if f["hit"] is None]
-
-    if undetermined:
-        names = ", ".join(f"{esc(f['title'])}({esc(f['reason'])})" for f in undetermined)
-        html_block(f'<div class="fs-box slate"><b>판단 보류</b>{names}</div>')
+    if final["pending"]:
+        names = "<br>".join(f"{esc(f['title'])}: {esc(f['reason'])}" for f in final["pending"])
+        html_block(f'<div class="fs-box slate"><b>판단 보류 ({len(final["pending"])}건)</b>{names}</div>')
 
     clauses = result["review"]["risky_clauses"]
 
     if clauses and result["source"] != "rules":
         with st.expander(f"평가 에이전트가 지적한 조항 원문 ({len(clauses)}건)"):
             for clause in clauses:
-                st.markdown(f"- {clause}")
+                st.text(clause)
 
 
 def render_actions(result: dict):
 
-    review = result["review"]
-    actions = review["recommendations"]
+    actions = result["final"]["recommendations"]
 
     st.subheader("3. 다음에 할 일")
 
     if not actions:
-        st.write("따로 요청할 내용이 없습니다. 서명한 계약서 사본 1부를 꼭 받아 두세요.")
+        if result["final"]["level"] == "safe":
+            st.write("따로 요청할 내용이 없습니다. 서명한 계약서 사본 1부를 꼭 받아 두세요.")
+        else:
+            st.write("판단 보류 항목을 계약서 원문으로 확인하고, 애매하면 고용노동부 상담(☎1350)에 물어보세요.")
         return
 
     for action in actions:
-        st.markdown(f"- {action}")
+        st.text(f"• {action}")
 
-    if result["source"] != "rules":
-        message = "사장님, 근로계약서 관련해서 몇 가지 확인 부탁드립니다.\n\n"
-        message += "\n".join(f"{i}. {action}" for i, action in enumerate(actions, start=1))
-        message += "\n\n확인 후 수정된 계약서를 받을 수 있을까요? 감사합니다."
-        st.caption("사장님께 보낼 메시지 (오른쪽 위 아이콘으로 복사)")
-        st.code(message, language=None, wrap_lines=True)
+    requests = result["final"]["requests"]
+
+    if not requests:
+        return
+
+    message = "사장님, 근로계약서 관련해서 몇 가지 확인 부탁드립니다.\n\n"
+    message += "\n".join(f"{i}. {request}" for i, request in enumerate(requests, start=1))
+    message += "\n\n확인 후 수정된 계약서를 받을 수 있을까요? 감사합니다."
+    st.caption("사장님께 보낼 메시지 초안 · 평가 에이전트 작성 (오른쪽 위 아이콘으로 복사)")
+    st.code(message, language=None, wrap_lines=True)
 
 
 def render_details(result: dict):
@@ -413,21 +450,25 @@ def render_details(result: dict):
 
     with st.expander("계산 보조값과 기준서 (평가 입력 문서 2·3부)"):
         criteria = result["engine"]["criteria"]
+        applicable = "정하지 못함" if facts["applicable_min_wage"] is None else f"{facts['applicable_min_wage_year']}년 {won(facts['applicable_min_wage'])}"
+        daily = "계산 불가" if facts["daily_work_hours"] is None else f"{facts['daily_work_hours']:g}시간"
         st.markdown(
             f"- 기준서: {criteria['name'] or CRITERIA_FILE.name} ({criteria['version'] or '버전 미상'})\n"
-            f"- 최저임금: {criteria['base_year']}년 {won(criteria['min_wage_current'])}, 다음 해 {won(criteria['min_wage_next'])}\n"
-            f"- 1일 근로시간(휴게 제외): {facts['daily_work_hours'] if facts['daily_work_hours'] is not None else '계산 불가'}시간\n"
+            f"- 최저임금: {criteria['base_year'] or '기준'}년 {won(criteria['min_wage_current'])}, 다음 해 {won(criteria['min_wage_next'])}\n"
+            f"- 1일 근로시간(휴게 제외): {daily}\n"
             f"- 1주 근무일: {facts['work_days_per_week'] or '계산 불가'}\n"
             f"- 시급 환산: {won(facts['hourly_wage'])} {facts['hourly_basis']}\n"
-            f"- 적용 최저임금: {facts['applicable_min_wage_year']}년 {won(facts['applicable_min_wage'])}"
+            f"- 적용 최저임금: {applicable}"
         )
-        for note in facts["notes"]:
+        for note in facts["notes"] + result["engine"]["criteria_problems"]:
             st.caption(f"참고: {note}")
 
-    if result["review"] and result["review"]["confirmed_items"]:
+    final = result["final"]
+
+    if final and final["confirmed_items"]:
         with st.expander("기준을 충족한 항목"):
-            for item in result["review"]["confirmed_items"]:
-                st.markdown(f"- {item}")
+            for item in final["confirmed_items"]:
+                st.text(f"• {item}")
 
     export = {
         "mode": result["mode"],
@@ -435,6 +476,8 @@ def render_details(result: dict):
         "final_level": result["final_level"],
         "agent_level": result["agent_level"],
         "engine_level": result["engine_level"],
+        "final": {k: v for k, v in (final or {}).items() if k not in ("cards", "pending")},
+        "final_rule_codes": [card["rule_code"] for card in final["cards"]] if final else [],
         "review": result["review"],
         "contract": result["contract"],
         "facts": facts,
@@ -475,7 +518,7 @@ if result:
 
     st.divider()
 
-    if result["review"] is None:
+    if result["final"] is None:
         render_not_contract(result)
     else:
         render_summary(result)

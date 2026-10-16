@@ -31,18 +31,21 @@ UPSTAGE_BASE_URL = "https://api.upstage.ai/v2"
 
 # 계약서 추출 에이전트 (Parse → Extract, contract_info)
 CONTRACT_AGENT_ID = os.getenv("CONTRACT_AGENT_ID", "").strip()
-CONTRACT_CONFIG_ID = os.getenv("CONTRACT_CONFIG_ID", "1").strip()
+CONTRACT_CONFIG_ID = os.getenv("CONTRACT_CONFIG_ID", "").strip()
 
 # 기준서 추출 에이전트 (Parse → Extract, criteria)
 CRITERIA_AGENT_ID = os.getenv("CRITERIA_AGENT_ID", "").strip()
-CRITERIA_CONFIG_ID = os.getenv("CRITERIA_CONFIG_ID", "1").strip()
+CRITERIA_CONFIG_ID = os.getenv("CRITERIA_CONFIG_ID", "").strip()
 
 # 평가 에이전트 (Parse → Classify → 분류별 Extract)
 REVIEW_AGENT_ID = os.getenv("REVIEW_AGENT_ID", "").strip()
-REVIEW_CONFIG_ID = os.getenv("REVIEW_CONFIG_ID", "1").strip()
+REVIEW_CONFIG_ID = os.getenv("REVIEW_CONFIG_ID", "").strip()
 
-# 에이전트 Job 하나를 기다리는 최대 시간(초)
+# 에이전트 Job 하나를 기다리는 최대 시간(초). 넘기기 전에 완료되면 결과를 쓴다.
 AGENT_TIMEOUT_SECONDS = int(os.getenv("AGENT_TIMEOUT_SECONDS", "180"))
+
+# 업로드·Job 생성·상태 조회 HTTP 요청 하나의 최대 시간(초)
+HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "60"))
 
 # 1이면 키가 있어도 데모 모드로 실행한다 (발표 중 요청 제한 대비)
 FORCE_DEMO = os.getenv("FORCE_DEMO", "0").strip() == "1"

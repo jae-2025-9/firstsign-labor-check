@@ -10,6 +10,8 @@ env/
 
 # Environment Variables
 .env
+.env.*
+!.env.example
 
 # Generated Output
 output/

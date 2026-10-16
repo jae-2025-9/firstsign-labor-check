@@ -1,17 +1,20 @@
 ############################################################
 # 첫사인 알바 안심 체크
-# Requirements (Python 3.11+)
+# Requirements (Python 3.12, .python-version과 같게)
+#
+# 로컬 테스트와 Railway 빌드가 같은 조합을 쓰도록 버전을 고정했다.
 ############################################################
 
 # Web UI
-streamlit>=1.46.0
+streamlit==1.66.0
 
 # Upstage Studio API (OpenAI Compatible SDK)
-openai>=1.99.0
+openai==3.31.0
 
 # Environment Variables
-python-dotenv>=1.1.0
+python-dotenv==1.2.4
 
-# PDF Generation
-reportlab>=4.2.2
-Pillow>=11.0.0
+# PDF 생성(평가 입력 문서)과 업로드 PDF 검사
+reportlab==5.0.1
+Pillow==12.3.0
+pypdf==6.21.0

@@ -18,6 +18,7 @@ from openai import OpenAI
 
 from config import (
     AGENT_TIMEOUT_SECONDS,
+    HTTP_TIMEOUT_SECONDS,
     UPSTAGE_API_KEY,
     UPSTAGE_BASE_URL
 )
@@ -41,9 +42,12 @@ def get_client() -> OpenAI:
             "UPSTAGE_API_KEY가 설정되지 않았습니다. .env를 확인하세요."
         )
 
+    # SDK 기본값(요청당 600초, 재시도 2회)이면 화면이 10분 넘게 멈출 수 있다
     return OpenAI(
         api_key=UPSTAGE_API_KEY,
-        base_url=UPSTAGE_BASE_URL
+        base_url=UPSTAGE_BASE_URL,
+        timeout=HTTP_TIMEOUT_SECONDS,
+        max_retries=1
     )
 
 
@@ -273,8 +277,11 @@ def find_classification(
 
     walk(raw)
 
-    if preferred:
-        return preferred[0]
-
+    # 응답에 워크플로우 정의(분류 이름 3개)가 함께 들어 있을 수 있다.
+    # 서로 다른 후보가 섞여 있으면 고르지 않고 None을 돌려준다.
     # output_text 안의 JSON 문자열은 여기서 보지 않는다. 그 안의 값은 결과 스키마가 처리한다.
-    return anywhere[0] if len(set(anywhere)) == 1 else None
+    for candidates in (preferred, anywhere):
+        if candidates:
+            return candidates[0] if len(set(candidates)) == 1 else None
+
+    return None

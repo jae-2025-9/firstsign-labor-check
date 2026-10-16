@@ -16,11 +16,14 @@ app.py
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from config import (
     CACHE_DIR,
     CONTRACT_JSON,
+    CRITERIA_AGENT_ID,
+    CRITERIA_CONFIG_ID,
     CRITERIA_FILE,
     CRITERIA_JSON,
     FIXTURE_DIR,
@@ -31,7 +34,7 @@ from config import (
     print_config,
     validate_config
 )
-from agent_client import find_classification
+from agent_client import AgentError, find_classification
 from contract_agent import analyze_contract
 from criteria_agent import analyze_criteria
 from review_agent import analyze_review
@@ -41,12 +44,20 @@ from rules import (
     LEVELS,
     as_list,
     compute_facts,
+    criteria_problems,
     evaluate,
     looks_like_contract,
+    more_severe,
     normalize_level,
     text
 )
 from upload import upload_file
+
+
+class CriteriaError(AgentError):
+    """
+    기준서 추출 결과로 점검할 수 없음
+    """
 
 
 ##################################################
@@ -83,16 +94,33 @@ def load_or_extract_criteria(
 ) -> dict:
     """
     기준서는 고정 문서라 내용이 같으면 추출 결과를 다시 쓴다.
-    기준서 PDF를 바꾸면 해시가 달라져 다시 추출한다.
+
+    캐시 키에는 기준서 PDF 해시와 Criteria Agent ID·Config ID를 넣는다.
+    기준서나 에이전트 설정을 바꾸면 다시 추출한다. 읽을 수 없거나 쓸 수 없는 캐시도 다시 추출한다.
     """
 
-    cache = CACHE_DIR / f"criteria_{file_sha256(criteria_file)[:16]}.json"
+    key = f"{file_sha256(criteria_file)[:16]}_{CRITERIA_AGENT_ID}_{CRITERIA_CONFIG_ID}"
+    cache = CACHE_DIR / f"criteria_{re.sub(r'[^A-Za-z0-9_.-]', '_', key)}.json"
+    criteria = None
 
     if cache.exists():
-        print(f"\nStep 2. Criteria Agent (캐시 사용: {cache.name})")
-        criteria = load_json(cache)
-    else:
-        criteria = process_document("Step 2. Criteria Agent", criteria_file, analyze_criteria, cache)
+        try:
+            cached = load_json(cache)
+            if isinstance(cached, dict) and not criteria_problems(cached):
+                print(f"\nStep 2. Criteria Agent (캐시 사용: {cache.name})")
+                criteria = cached
+        except (OSError, ValueError):
+            criteria = None
+
+    if criteria is None:
+        criteria = process_document("Step 2. Criteria Agent", criteria_file, analyze_criteria, output_json)
+
+        problems = criteria_problems(criteria)
+
+        if problems:
+            raise CriteriaError("점검 기준서를 읽지 못했습니다: " + ", ".join(problems))
+
+        save_json(criteria, cache)
 
     save_json(criteria, output_json)
 
@@ -128,14 +156,18 @@ def normalize_review(review: dict, raw: dict) -> dict:
     """
     평가 에이전트 결과를 화면에서 쓰기 좋은 모양으로 바꾼다.
 
-    분류는 결과 스키마의 review_level을 먼저 보고,
-    없으면 응답 원본에서 Classify 노드가 고른 분류를 찾는다.
+    분류는 결과 스키마의 review_level과 응답 원본의 Classify 결과를 모두 본다.
+    둘이 다르면 더 엄격한 쪽을 쓰고 level_conflict로 알린다.
     """
 
-    level = normalize_level(review.get("review_level")) or find_classification(raw, LEVELS)
+    schema_level = normalize_level(review.get("review_level"))
+    classify_level = find_classification(raw, LEVELS)
 
     return {
-        "review_level": level,
+        "review_level": more_severe(schema_level, classify_level),
+        "schema_level": schema_level,
+        "classify_level": classify_level,
+        "level_conflict": bool(schema_level and classify_level and schema_level != classify_level),
         "summary": text(review.get("summary")),
         "matched_rules": [str(item) for item in as_list(review.get("matched_rules"))],
         "missing_items": [str(item) for item in as_list(review.get("missing_items"))],

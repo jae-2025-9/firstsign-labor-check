@@ -17,7 +17,9 @@
     "job_description": [
         ""
     ],
-    "work_days": [],
+    "work_days": [
+        "주 5일 (요일은 협의)"
+    ],
     "work_start_time": [
         "11:00"
     ],

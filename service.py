@@ -6,17 +6,21 @@ service.py
 - 실연결 모드: Studio 에이전트 3개를 실제로 호출한다 (app.run_workflow).
 - 데모 모드: 키나 Agent ID가 없거나 FORCE_DEMO=1이면 샘플만 점검한다.
   fixtures/live/에 실제 에이전트 결과가 있으면 그것을 재생하고,
-  없으면 팀이 만든 예상 추출값(fixtures/expected/)에 규칙 계산을 적용한다.
+  없으면 예상 추출값(fixtures/expected/)에 규칙 계산을 적용한다.
 
-어느 모드든 마지막에 규칙 계산으로 교차 검증하고, 두 판정 중 더 엄격한 등급을 보여 준다.
+어느 모드든 마지막에 규칙 계산으로 교차 검증하고, rules.final_view로
+등급·지적·요약·권장 행동이 서로 모순되지 않는 최종 결과를 만든다.
 """
 
+import io
 import shutil
 import uuid
 from datetime import datetime
 from pathlib import Path
 
 from openai import APIConnectionError, APIStatusError, RateLimitError
+from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from config import (
     FIXTURE_DIR,
@@ -28,7 +32,7 @@ from config import (
     is_live_ready
 )
 from agent_client import AgentError
-from app import normalize_review, run_workflow
+from app import CriteriaError, normalize_review, run_workflow
 from file_manager import load_json
 from review_builder import build_review_input, contract_rows
 from rules import (
@@ -36,8 +40,10 @@ from rules import (
     cross_check,
     engine_review,
     evaluate,
-    more_severe
+    final_view
 )
+
+MAX_PAGES = 20
 
 
 ##################################################
@@ -55,6 +61,10 @@ class ServiceError(RuntimeError):
 ##################################################
 
 def validate_pdf(data: bytes) -> None:
+    """
+    업로드한 파일이 열 수 있는 PDF인지 Upstage에 보내기 전에 확인한다.
+    파일 문제를 API Key·Agent ID 오류와 구분해 안내하기 위해서다.
+    """
 
     if not data:
         raise ServiceError("빈 파일입니다. 근로계약서 PDF를 다시 올려 주세요.")
@@ -62,8 +72,28 @@ def validate_pdf(data: bytes) -> None:
     if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
         raise ServiceError(f"파일이 너무 큽니다. {MAX_UPLOAD_MB}MB 이하 PDF만 올릴 수 있습니다.")
 
-    if not data.lstrip()[:5] == b"%PDF-":
+    if data.lstrip()[:5] != b"%PDF-":
         raise ServiceError("PDF 파일이 아닙니다. 근로계약서를 PDF로 저장해 올려 주세요.")
+
+    try:
+        reader = PdfReader(io.BytesIO(data))
+
+        if reader.is_encrypted:
+            raise ServiceError("암호가 걸린 PDF는 읽을 수 없습니다. 암호를 풀고 다시 올려 주세요.")
+
+        pages = len(reader.pages)
+
+    except ServiceError:
+        raise
+
+    except (PdfReadError, ValueError, KeyError, TypeError, OSError) as error:
+        raise ServiceError("PDF가 손상되어 열 수 없습니다. 다시 저장해서 올려 주세요.") from error
+
+    if pages == 0:
+        raise ServiceError("페이지가 없는 PDF입니다.")
+
+    if pages > MAX_PAGES:
+        raise ServiceError(f"페이지가 너무 많습니다. 근로계약서는 {MAX_PAGES}쪽 이하만 올릴 수 있습니다.")
 
 
 def new_run_dir() -> Path:
@@ -155,10 +185,10 @@ def run_review_service(
 
             result = run_workflow(contract_file, run_dir=run_dir, progress=progress)
             contract, criteria, facts = result["contract"], result["criteria"], result["facts"]
-            review_raw_json, raw = result["review"], result["review_raw"] or {}
+            review_json, raw = result["review"], result["review_raw"] or {}
 
         else:
-            contract, criteria, review_raw_json, raw, source = demo_inputs(sample_id)
+            contract, criteria, review_json, raw, source = demo_inputs(sample_id)
             mode = "demo"
             facts = compute_facts(contract, criteria)
 
@@ -174,13 +204,14 @@ def run_review_service(
 
         if not engine["is_contract"]:
             review = None
-        elif review_raw_json is not None:
-            review = normalize_review(review_raw_json, raw or {})
+        elif review_json is not None:
+            review = normalize_review(review_json, raw or {})
         else:
             review = engine_review(engine)
 
         agent_level = review["review_level"] if (review and source != "rules") else None
         check = cross_check(agent_level, review["matched_rules"] if review else [], engine)
+        final = final_view(review, engine, agent_level, check) if review else None
 
         review_pdf = run_dir / "Review_Input.pdf"
 
@@ -196,13 +227,17 @@ def run_review_service(
             "review": review,
             "agent_level": agent_level,
             "engine_level": engine["level"],
-            "final_level": more_severe(agent_level, engine["level"]),
+            "final_level": final["level"] if final else None,
+            "final": final,
             "cross_check": check,
             "review_pdf_bytes": review_pdf.read_bytes() if review_pdf.exists() else None,
         }
 
     except ServiceError:
         raise
+
+    except CriteriaError as error:
+        raise ServiceError(f"{error} Criteria Agent 설정을 확인해 주세요.") from error
 
     except RateLimitError as error:
         raise ServiceError("Upstage API 요청 한도를 넘었습니다. 잠시 뒤 다시 시도해 주세요.") from error

@@ -30,6 +30,7 @@ def test_demo_samples(sample_id, level):
     assert result["mode"] == "demo"
     assert result["source"] == "rules"
     assert result["final_level"] == level
+    assert result["final"]["level"] == level
     assert result["review"]["review_level"] == level
     assert result["review_pdf_bytes"][:5] == b"%PDF-"
 
@@ -41,18 +42,48 @@ def test_demo_cleans_run_dir(tmp_path):
 
 def test_upload_rejected_in_demo():
     with pytest.raises(service.ServiceError, match="데모 모드"):
-        service.run_review_service(pdf_bytes=b"%PDF-1.4 test")
+        service.run_review_service(pdf_bytes=(config.SAMPLE_DIR / "sample1.pdf").read_bytes())
 
 
-@pytest.mark.parametrize("data,message", [(b"", "빈 파일"), (b"hello", "PDF 파일이 아닙니다")])
+@pytest.mark.parametrize("data,message", [
+    (b"", "빈 파일"),
+    (b"hello", "PDF 파일이 아닙니다"),
+    (b"%PDF-", "손상"),
+    (b"%PDF-1.4 not a PDF", "손상"),
+])
 def test_upload_validation(data, message):
     with pytest.raises(service.ServiceError, match=message):
         service.run_review_service(pdf_bytes=data)
 
 
+def test_real_pdf_passes_validation():
+    service.validate_pdf((config.SAMPLE_DIR / "sample1.pdf").read_bytes())
+
+
+def test_encrypted_pdf_is_rejected(tmp_path):
+    from pypdf import PdfReader, PdfWriter
+    writer = PdfWriter()
+    for page in PdfReader(config.SAMPLE_DIR / "sample1.pdf").pages:
+        writer.add_page(page)
+    writer.encrypt("secret")
+    target = tmp_path / "locked.pdf"
+    with open(target, "wb") as f:
+        writer.write(f)
+    with pytest.raises(service.ServiceError, match="암호"):
+        service.validate_pdf(target.read_bytes())
+
+
 def test_requires_exactly_one_input():
     with pytest.raises(service.ServiceError):
         service.run_review_service()
+
+
+def test_review_input_pdf_with_very_long_terms(tmp_path):
+    contract = json.loads((FIXTURES / "contract_sample3.json").read_text(encoding="utf-8"))
+    criteria = json.loads((FIXTURES / "criteria.json").read_text(encoding="utf-8"))
+    contract["special_terms"] = ["기타 계약 조항입니다. " * 1000]
+    path = build_review_input(contract, criteria, compute_facts(contract, criteria), tmp_path / "long.pdf")
+    assert path.read_bytes()[:5] == b"%PDF-"
 
 
 def test_review_input_pdf(tmp_path):

@@ -6,6 +6,8 @@ file_manager.py
 
 import hashlib
 import json
+import os
+import tempfile
 from pathlib import Path
 
 
@@ -30,13 +32,21 @@ def ensure_directory(path: Path):
 
 def save_json(data, file_path: Path):
     """
-    JSON 저장
+    JSON 저장. 임시 파일에 다 쓴 뒤 바꿔치기해서, 다른 요청이 쓰다 만 파일을 읽지 않게 한다.
     """
 
+    file_path = Path(file_path)
     ensure_directory(file_path)
 
-    with open(file_path, "w", encoding="utf-8") as file:
-        json.dump(data, file, ensure_ascii=False, indent=4)
+    descriptor, temp_path = tempfile.mkstemp(dir=file_path.parent, prefix=f".{file_path.name}.", suffix=".tmp")
+
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            json.dump(data, file, ensure_ascii=False, indent=4)
+        os.replace(temp_path, file_path)
+    except BaseException:
+        Path(temp_path).unlink(missing_ok=True)
+        raise
 
 
 def load_json(file_path: Path):
