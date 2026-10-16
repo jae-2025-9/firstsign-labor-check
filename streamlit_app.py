@@ -22,7 +22,6 @@ from service import ServiceError, run_review_service
 
 st.set_page_config(
     page_title="첫사인 · 알바 안심 체크",
-    page_icon="🦁",
     layout="centered"
 )
 
@@ -111,7 +110,7 @@ def html_block(markup: str):
 html_block(
     """
     <div class="fs-hero">
-      <h1>🦁 첫사인 · 알바 안심 체크</h1>
+      <h1>첫사인 · 알바 안심 체크</h1>
       <p>사인하기 전 30초, 알바 근로계약서의 빠진 항목과 불리한 조항을 기준서대로 짚어 드려요.</p>
       <div class="fs-tags">
         <span class="fs-tag">Upstage Studio 에이전트 3개</span>
@@ -122,13 +121,13 @@ html_block(
     """
 )
 
-st.caption("참고용 점검 도구이며 법률 자문이 아닙니다. 중요한 계약은 노무사·고용노동부 상담(☎1350)으로 꼭 확인하세요.")
+st.caption("참고용 점검 도구이며 법률 자문이 아닙니다. 중요한 계약은 노무사나 고용노동부 상담(국번 없이 1350)으로 꼭 확인하세요.")
 
 live = is_live_ready()
 
 if not live:
     reason = "FORCE_DEMO=1" if not missing_settings() else "에이전트 연결 정보(.env)가 없어"
-    st.info(f"데모 모드입니다. {reason} 체험용 샘플 계약서만 점검할 수 있습니다.", icon="🧪")
+    st.info(f"데모 모드입니다. {reason} 체험용 샘플 계약서만 점검할 수 있습니다.")
 
 
 ##################################################
@@ -240,8 +239,7 @@ def render_not_contract(result: dict):
 
     st.warning(
         "임금·근로시간 같은 핵심 항목이 대부분 비어 있습니다. "
-        "근로계약서가 아니거나 읽을 수 없는 파일일 수 있어 판정을 표시하지 않습니다.",
-        icon="📄"
+        "근로계약서가 아니거나 읽을 수 없는 파일일 수 있어 판정을 표시하지 않습니다."
     )
 
     render_details(result)
@@ -271,7 +269,7 @@ def render_summary(result: dict):
     )
 
     if final["level"] is None:
-        st.info("일부 규칙을 판단하지 못해 등급을 정하지 않았습니다. 아래 '판단 보류' 항목을 계약서 원문으로 확인하세요.", icon="⏸️")
+        st.info("일부 규칙을 판단하지 못해 등급을 정하지 않았습니다. 아래 '판단 보류' 항목을 계약서 원문으로 확인하세요.")
 
     col1, col2, col3 = st.columns(3)
 
@@ -308,14 +306,14 @@ def render_cross_check(result: dict):
 
     if review.get("level_conflict"):
         html_block(
-            '<div class="fs-box amber"><b>⚠️ 평가 에이전트 내부 결과가 다릅니다</b>'
+            '<div class="fs-box amber"><b>평가 에이전트 내부 결과가 다릅니다</b>'
             f"Classify 분류는 {esc(LEVEL_LABELS[review['classify_level']])}, "
             f"결과 스키마의 review_level은 {esc(LEVEL_LABELS[review['schema_level']])}입니다. 더 엄격한 쪽을 썼습니다.</div>"
         )
 
     if agent is None:
         html_block(
-            '<div class="fs-box amber"><b>⚠️ 평가 에이전트의 분류를 찾지 못했습니다</b>'
+            '<div class="fs-box amber"><b>평가 에이전트의 분류를 찾지 못했습니다</b>'
             "응답에서 Classify 결과와 review_level을 찾지 못해 규칙 계산 결과만으로 등급을 표시합니다.</div>"
         )
         return
@@ -340,7 +338,7 @@ def render_cross_check(result: dict):
 
     lines.append("사용자 보호를 위해 둘 중 더 엄격한 등급과 두 쪽의 지적을 모두 표시합니다. 해당 항목은 계약서 원문으로 직접 확인하세요.")
 
-    html_block('<div class="fs-box amber"><b>⚠️ 교차 검증 결과가 다릅니다</b>' + "<br>".join(lines) + "</div>")
+    html_block('<div class="fs-box amber"><b>교차 검증 결과가 다릅니다</b>' + "<br>".join(lines) + "</div>")
 
 
 def render_missing(result: dict):
@@ -421,7 +419,7 @@ def render_actions(result: dict):
         if result["final"]["level"] == "safe":
             st.write("따로 요청할 내용이 없습니다. 서명한 계약서 사본 1부를 꼭 받아 두세요.")
         else:
-            st.write("판단 보류 항목을 계약서 원문으로 확인하고, 애매하면 고용노동부 상담(☎1350)에 물어보세요.")
+            st.write("판단 보류 항목을 계약서 원문으로 확인하고, 애매하면 고용노동부 상담(국번 없이 1350)에 물어보세요.")
         return
 
     for action in actions:
