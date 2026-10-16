@@ -444,34 +444,168 @@ def test_agent_warning_without_rule_codes_is_check_needed(criteria):
     assert "근거를 찾지 못해" in final["summary"]
 
 
-def test_source_conditions_repair_truncated_condition(criteria):
-    from rules import KNOWN_CONDITIONS, apply_source_conditions, condition_supported, criteria_rules
+def run_final(contract, criteria, agent_level, matched_rules, **review):
+    from rules import compute_facts, final_view
+    engine = evaluate(contract, criteria, compute_facts(contract, criteria))
+    review = agent_review(review_level=agent_level, matched_rules=matched_rules, **review)
+    check = cross_check(agent_level, matched_rules, engine)
+    return engine, final_view(review, engine, agent_level, check)
+
+
+@pytest.mark.parametrize("field,value,code", [
+    ("wage_amount", [10800, 9500], "LABOR_MIN_WAGE"),
+    ("wage_amount", "10,800원 (수습 3개월은 9,500원)", "LABOR_MIN_WAGE"),
+    ("contract_end_date", ["2026-12-31, 2027-12-31"], "LABOR_MIN_WAGE_NEXT"),
+    ("contract_end_date", "2026-12-31 (자동 연장 시 2027-12-31)", "LABOR_MIN_WAGE_NEXT"),
+    ("break_time", "12:00~12:30 또는 13:00~13:30", "LABOR_BREAK"),
+    ("break_time", "21:00~22:00", "LABOR_BREAK"),
+    ("weekly_holiday", "매주 협의하여 정한다.", "LABOR_WEEKLY_HOLIDAY"),
+    ("copy_delivery_clause", "근로자에게 계약서를 교부한다는 규정은 없다.", "LABOR_SIGN_COPY"),
+    ("is_signed", [True, False], "LABOR_SIGN_COPY"),
+])
+def test_ambiguous_input_never_disputes_agent(criteria, field, value, code):
+    # 계약서 값이 모호하면 규칙 계산은 통과로 확정하지 않는다. 에이전트 지적은 카드로 남는다.
+    contract = load("contract_sample1.json")
+    contract[field] = value
+    if code == "LABOR_MIN_WAGE_NEXT":
+        contract["wage_amount"] = 10500
+    engine, final = run_final(contract, criteria, "check_needed", [f"{code} - 근거"], recommendations=["확인해 주세요."])
+    finding = next(f for f in engine["findings"] if f["rule_code"] == code)
+    assert finding["hit"] is not False, (field, value)
+    assert code in {c["rule_code"] for c in final["cards"]}
+    assert final["disputed"] == []
+    assert final["level"] in ("check_needed", "risky")
+    assert final["requests"]
+
+
+def test_unlinked_warning_survives_unrelated_dispute(criteria):
+    # 코드 없이 쓴 위험 지적에 무관한 의견 차이가 섞여도 위험 판단이 사라지지 않는다
+    contract = load("contract_sample1.json")
+    contract["special_terms"] = ["퇴사하려면 사장님의 허가를 받아야 한다."]
+    rules = ["부당한 퇴사 제한 - 퇴사하려면 사장님 허가 필요", "LABOR_SIGN_COPY - 근로기준법 제17조 제2항"]
+    engine, final = run_final(contract, criteria, "risky", rules, recommendations=["퇴사 제한 조항을 빼 주세요."])
+    assert next(f for f in engine["findings"] if f["rule_code"] == "LABOR_PENALTY")["hit"] is None
+    assert [d["rule_code"] for d in final["disputed"]] == ["LABOR_SIGN_COPY"]
+    assert final["level"] == "risky"
+    assert final["requests"] == ["퇴사 제한 조항을 빼 주세요."]
+    assert "에이전트 판단대로 '위험'" in final["summary"]
+
+
+def test_unlinked_warning_without_pending_rules_is_check_needed(criteria):
+    contract = load("contract_sample1.json")
+    _, final = run_final(contract, criteria, "risky", ["부당한 퇴사 제한 - 근거 없음"])
+    assert final["level"] == "check_needed"
+
+
+def test_partial_dispute_drops_only_refuted_sentences(criteria):
+    # 일부 지적만 의견 차이면 그 규칙에 관한 요청·누락 문장만 뺀다
+    contract = load("contract_sample1.json")
+    contract["job_description"] = ""
+    engine, final = run_final(
+        contract, criteria, "check_needed", ["LABOR_REQUIRED_TERMS - 제17조", "LABOR_BREAK - 제54조"],
+        missing_items=["휴게시간", "업무의 내용"],
+        recommendations=["업무 내용을 적어 주세요.", "휴게시간이 없으니 30분을 넣어 주세요."],
+    )
+    assert [d["rule_code"] for d in final["disputed"]] == ["LABOR_BREAK"]
+    assert final["level"] == "check_needed"
+    assert final["requests"] == ["업무 내용을 적어 주세요."]
+    assert "휴게시간이 없으니 30분을 넣어 주세요." not in final["recommendations"]
+    assert "휴게시간" not in final["missing_items"]
+    assert "업무의 내용" in final["missing_items"]
+
+
+def test_next_year_sentence_attributed_to_next_year_rule():
+    from rules import drop_disputed
+    sentences = ["2027년 1월 1일부터 시급을 10,700원 이상으로 올려 주세요.", "시급을 최저임금 이상으로 올려 주세요."]
+    assert drop_disputed(sentences, {"LABOR_MIN_WAGE_NEXT"}, 2027) == [sentences[1]]
+    assert drop_disputed(sentences, {"LABOR_MIN_WAGE"}, 2027) == [sentences[0]]
+
+
+def test_source_table_repairs_truncated_cells(criteria):
+    from rules import KNOWN_CONDITIONS, apply_source_table, condition_supported, criteria_rules
     truncated = copy.deepcopy(criteria)
     for row in truncated["check_rules"]:
         if row["rule_code"] == "LABOR_MIN_WAGE_NEXT":
             row["check_condition"] = "계약기간이 2027년 1월 1일 이후까지 이어지는데 시급이 2027년 최저임금 10,700원 미만이다. 종료"
+            row["recommended_action"] = "2027년 1월 1일부 터 시급을 10,700"
     rule = next(r for r in criteria_rules(truncated) if r["rule_code"] == "LABOR_MIN_WAGE_NEXT")
     assert condition_supported(rule, 2026)[0] is False
 
-    source = {"LABOR_MIN_WAGE_NEXT": KNOWN_CONDITIONS["LABOR_MIN_WAGE_NEXT"][0]}
-    fixed, repaired = apply_source_conditions(truncated, source)
+    source = {"LABOR_MIN_WAGE_NEXT": {
+        "check_condition": KNOWN_CONDITIONS["LABOR_MIN_WAGE_NEXT"][0],
+        "recommended_action": "2027년 1월 1일부 터 시급을 10,700 원 이상으로 올려 달라고 요청하세 요.",
+    }}
+    fixed, repaired = apply_source_table(truncated, source)
     assert repaired == ["LABOR_MIN_WAGE_NEXT"]
     rule = next(r for r in criteria_rules(fixed) if r["rule_code"] == "LABOR_MIN_WAGE_NEXT")
     assert condition_supported(rule, 2026)[0] is True
+    assert rule["recommended_action"].endswith("요청하세 요.")
     assert truncated["check_rules"] is not fixed["check_rules"]  # 원본은 그대로
 
-    same, none = apply_source_conditions(fixed, source)
+    same, none = apply_source_table(fixed, source)
     assert none == [] and same is fixed
-    assert apply_source_conditions(truncated, {}) == (truncated, [])
+    assert apply_source_table(truncated, {}) == (truncated, [])
 
 
-def test_source_conditions_read_from_pdf():
-    from app import criteria_source_conditions
+def test_source_table_never_cuts_a_longer_extraction(criteria):
+    # 원문 판독이 바닥글 등으로 끊겨 더 짧으면, 새 조건이 담긴 추출 값을 지우지 않는다 (기준서 변경을 가리지 않음)
+    from rules import KNOWN_CONDITIONS, apply_source_table, condition_supported, criteria_rules
+    changed = copy.deepcopy(criteria)
+    known = KNOWN_CONDITIONS["LABOR_MIN_WAGE"][0]
+    for row in changed["check_rules"]:
+        if row["rule_code"] == "LABOR_MIN_WAGE":
+            row["check_condition"] = known + " 단, 시급이 11,000원 미만이면 위반으로 본다."
+    fixed, repaired = apply_source_table(changed, {"LABOR_MIN_WAGE": {"check_condition": known}})
+    assert repaired == [] and fixed is changed
+    rule = next(r for r in criteria_rules(fixed) if r["rule_code"] == "LABOR_MIN_WAGE")
+    assert condition_supported(rule, 2026)[0] is False
+
+    # 내용이 다른 경우도 바꾸지 않는다
+    other = apply_source_table(changed, {"LABOR_MIN_WAGE": {"check_condition": "전혀 다른 조건이다. 그리고 더 길다. 훨씬 더 길다."}})
+    assert other == (changed, [])
+
+
+def test_source_table_read_from_pdf():
+    from app import criteria_source_table
     from rules import KNOWN_CONDITIONS, condition_shape
-    conditions = criteria_source_conditions()
-    assert set(conditions) == set(KNOWN_CONDITIONS)
-    for code, sentence in conditions.items():
-        assert condition_shape(sentence) == condition_shape(KNOWN_CONDITIONS[code][0]), code
+    table = criteria_source_table()
+    assert set(table) == set(KNOWN_CONDITIONS)
+    for code, cells in table.items():
+        assert condition_shape(cells["check_condition"]) == condition_shape(KNOWN_CONDITIONS[code][0]), code
+        assert cells["legal_basis"] and cells["recommended_action"], code
+    assert condition_shape(table["LABOR_MIN_WAGE_NEXT"]["recommended_action"]).endswith("원이상으로올려달라고요청하세요")
+
+
+def test_source_table_skips_footer_and_repeated_header(tmp_path):
+    # 바닥글(쪽번호)과 다음 페이지에 반복된 머리글이 표를 끊거나 칸에 섞이지 않는다
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from app import criteria_source_table
+    from config import FONT_NAME
+    import review_builder  # noqa: F401  (한글 글꼴 등록)
+
+    path = tmp_path / "criteria.pdf"
+    c = canvas.Canvas(str(path), pagesize=A4)
+    c.setFont(FONT_NAME, 9)
+    for x, label in ((42, "규칙 코드"), (155, "점검 조건"), (367, "분류"), (391, "법령 근거"), (479, "권장 행동")):
+        c.drawString(x, 700, label)
+    c.drawString(42, 680, "LABOR_A")
+    c.drawString(155, 680, "첫 줄 조건이")
+    c.drawString(42, 20, "1 / 2")
+    c.showPage()
+    c.setFont(FONT_NAME, 9)
+    c.drawString(42, 800, "규칙 코드")
+    c.drawString(155, 800, "점검 조건")
+    c.drawString(155, 780, "다음 쪽으로 이어진다.")
+    c.drawString(42, 760, "LABOR_B")
+    c.drawString(155, 760, "둘째 규칙")
+    c.drawString(36, 700, "4. 분류 정의")
+    c.drawString(155, 680, "표 밖 문장")
+    c.save()
+
+    table = criteria_source_table(path)
+    assert table["LABOR_A"]["check_condition"] == "첫 줄 조건이 다음 쪽으로 이어진다."
+    assert table["LABOR_B"]["check_condition"] == "둘째 규칙"
 
 
 def test_final_view_agent_flags_new_rule(criteria):

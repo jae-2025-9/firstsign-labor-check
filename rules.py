@@ -246,11 +246,22 @@ def text(value) -> str:
     return ", ".join(str(item).strip() for item in as_list(value))
 
 
-def to_number(value) -> float | None:
+def consistent(value, parse):
+    """
+    목록 값이면 항목마다 해석해 하나로 모일 때만 그 값을 쓴다.
+    [10800, 9500]이나 [True, False]처럼 서로 다르면 어느 쪽인지 정할 수 없어 None이다.
+    """
 
-    raw = first(value, None)
+    if isinstance(value, (list, tuple)):
+        values = {parse(item) for item in value if not is_blank(item)} - {None}
+        return values.pop() if len(values) == 1 else None
 
-    if raw is None or isinstance(raw, bool):
+    return None if is_blank(value) else parse(value)
+
+
+def parse_number(raw) -> float | None:
+
+    if isinstance(raw, bool):
         return None
 
     if isinstance(raw, (int, float)):
@@ -270,12 +281,12 @@ def to_number(value) -> float | None:
     return number
 
 
-def to_bool(value) -> bool | None:
+def to_number(value) -> float | None:
 
-    raw = first(value, None)
+    return consistent(value, parse_number)
 
-    if raw is None:
-        return None
+
+def parse_bool(raw) -> bool | None:
 
     if isinstance(raw, bool):
         return raw
@@ -291,28 +302,57 @@ def to_bool(value) -> bool | None:
     return None
 
 
+def to_bool(value) -> bool | None:
+
+    return consistent(value, parse_bool)
+
+
+DATE_PATTERN = re.compile(r"(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})")
+
+# 계약기간이 조건에 따라 달라지는 표현. 날짜가 하나만 적혀 있어도 그 날짜로 끝난다고 단정할 수 없다.
+RENEWAL_PATTERN = re.compile(r"연장|갱신|재계약|자동")
+
+
+def dates_in(value) -> set[date]:
+
+    found = set()
+
+    for item in as_list(value):
+        for match in DATE_PATTERN.finditer(str(item)):
+            try:
+                found.add(date(int(match.group(1)), int(match.group(2)), int(match.group(3))))
+            except ValueError:
+                continue
+
+    return found
+
+
 def to_date(value) -> date | None:
+    """
+    날짜가 하나로 정해질 때만 돌려준다. 서로 다른 날짜가 둘 이상이면 None이다.
+    """
 
-    s = str(first(value, "")).strip()
-    match = re.search(r"(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})", s)
+    found = dates_in(value)
 
-    if not match:
-        return None
-
-    try:
-        return date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
-    except ValueError:
-        return None
+    return found.pop() if len(found) == 1 else None
 
 
 def to_year(value) -> int | None:
     """
-    날짜를 다 읽지 못해도 연도는 쓸 수 있다. "2027년 1월" → 2027
+    날짜를 다 읽지 못해도 연도는 쓸 수 있다. "2027년 1월" → 2027. 서로 다른 연도가 섞이면 None이다.
     """
 
-    match = re.search(r"(20\d{2})", str(first(value, "")))
+    years = {int(y) for item in as_list(value) for y in re.findall(r"(20\d{2})", str(item))}
 
-    return int(match.group(1)) if match else None
+    return years.pop() if len(years) == 1 else None
+
+
+def date_ambiguous(value) -> bool:
+    """
+    날짜 항목의 뜻이 하나로 정해지지 않는지. 서로 다른 날짜가 둘 이상이거나 연장·갱신 조건이 붙은 경우다.
+    """
+
+    return len(dates_in(value)) > 1 or bool(RENEWAL_PATTERN.search(" ".join(str(item) for item in as_list(value))))
 
 
 def normalize_level(value) -> str | None:
@@ -337,6 +377,14 @@ def more_severe(*levels: str | None) -> str | None:
     known = [level for level in levels if level in LEVEL_SEVERITY]
 
     return max(known, key=LEVEL_SEVERITY.get) if known else None
+
+
+def less_severe(a: str | None, b: str | None) -> str | None:
+
+    if a not in LEVEL_SEVERITY or b not in LEVEL_SEVERITY:
+        return None
+
+    return min(a, b, key=LEVEL_SEVERITY.get)
 
 
 def won(value) -> str:
@@ -384,12 +432,30 @@ def parse_times(value) -> list[int]:
     return minutes
 
 
+# 휴게 구간이 함께 적용되는지 고르는 것인지 알 수 없는 표현
+BREAK_ALTERNATIVE_PATTERN = re.compile(r"또는|혹은|선택|교대|요일별|요일에\s*따라|평일|주말|격주")
+
+
+def break_intervals(value) -> list[tuple[int, int]]:
+    """
+    휴게시간 항목의 시각 구간 [(시작 분, 종료 분)]. 시각이 짝을 이루지 않으면 빈 목록이다.
+    """
+
+    times = parse_times(re.sub(r"\([^)]*\)", " ", text(value)))
+
+    if len(times) < 2 or len(times) % 2:
+        return []
+
+    return list(zip(times[0::2], times[1::2]))
+
+
 def parse_break(value) -> tuple[bool, int | None]:
     """
     휴게시간 항목을 (적혀 있는지, 휴게 분)으로 바꾼다.
 
     괄호 안의 보충 설명("없음 (근로시간 5시간)")은 휴게 길이로 읽지 않는다.
-    적혀 있지만 길이를 알 수 없으면 (True, None)이다.
+    적혀 있지만 길이를 알 수 없으면 (True, None)이다. "12:00~12:30 또는 13:00~13:30"처럼
+    구간이 대안인지 함께 적용되는지 모르거나, 시각이 짝을 이루지 않거나, 구간이 겹치면 길이를 정하지 않는다.
     """
 
     s = text(value)
@@ -398,11 +464,20 @@ def parse_break(value) -> tuple[bool, int | None]:
         return False, None
 
     core = re.sub(r"\([^)]*\)", " ", s)
+
+    if BREAK_ALTERNATIVE_PATTERN.search(core):
+        return True, None
+
     times = parse_times(core)
 
     if len(times) >= 2:
-        pairs = zip(times[0::2], times[1::2])
-        return True, sum((end - start) % 1440 for start, end in pairs)
+        intervals = break_intervals(core)
+        if not intervals:
+            return True, None
+        spans = sorted((start, start + (end - start) % 1440) for start, end in intervals)
+        if any(nxt[0] < prev[1] for prev, nxt in zip(spans, spans[1:])):
+            return True, None
+        return True, sum(end - start for start, end in spans)
 
     hours = re.search(r"(\d+(?:\.\d+)?)\s*시간", core)
     mins = re.search(r"(\d+)\s*분", core)
@@ -606,16 +681,20 @@ def criteria_problems(criteria: dict, source_codes: set[str] | None = None) -> l
     return problems
 
 
-def apply_source_conditions(criteria: dict, source_conditions: dict[str, str] | None) -> tuple[dict, list[str]]:
-    """
-    기준서 PDF 원문에서 읽은 점검 조건으로 추출 결과의 조건 문장을 바로잡는다.
+SOURCE_FIELDS = ("check_condition", "legal_basis", "recommended_action")
 
-    표 칸이 페이지를 넘어가면 Criteria Agent가 조건 문장 끝을 놓칠 수 있다("…미만이다. 종료").
-    공백·문장부호를 지운 모양이 원문과 다른 규칙만 원문 문장으로 바꾸고, 바꾼 규칙 코드를 돌려준다.
-    원문을 읽지 못했으면 그대로 둔다.
+
+def apply_source_table(criteria: dict, source: dict[str, dict[str, str]] | None) -> tuple[dict, list[str]]:
+    """
+    기준서 PDF 원문 표에서 읽은 칸으로 추출 결과의 잘린 칸을 바로잡는다.
+
+    표 칸이 페이지를 넘어가면 Criteria Agent가 칸 끝을 놓칠 수 있다("…미만이다. 종료", "…시급을 10,700").
+    추출 값(공백·문장부호를 지운 모양)이 원문의 앞부분일 때만, 즉 추출이 잘린 것이 분명할 때만 원문으로 바꾼다.
+    원문 쪽이 더 짧거나(원문 판독이 끊김) 내용이 다르면 바꾸지 않는다. 그 규칙은 판단 보류로 남아 평가 에이전트를 따른다.
+    바꾼 규칙 코드를 돌려준다. 원문을 읽지 못했으면 그대로 둔다.
     """
 
-    if not source_conditions:
+    if not source:
         return criteria, []
 
     rows, repaired = [], []
@@ -624,11 +703,15 @@ def apply_source_conditions(criteria: dict, source_conditions: dict[str, str] | 
 
         row = dict(row)
         code = str(first(row.get("rule_code"), "")).strip()
-        source = source_conditions.get(code)
 
-        if source and condition_shape(source) != condition_shape(text(row.get("check_condition"))):
-            row["check_condition"] = source
-            repaired.append(code)
+        for field in SOURCE_FIELDS:
+            original = source.get(code, {}).get(field, "")
+            extracted = condition_shape(text(row.get(field)))
+            full = condition_shape(original)
+            if extracted and len(full) > len(extracted) and full.startswith(extracted):
+                row[field] = original
+                if code not in repaired:
+                    repaired.append(code)
 
         rows.append(row)
 
@@ -738,8 +821,14 @@ def compute_facts(contract: dict, criteria: dict) -> dict:
     daily_work_minutes = None
 
     if span_minutes is not None:
+        outside = [
+            (start, end) for start, end in break_intervals(contract.get("break_time"))
+            if (start - start_times[0]) % 1440 + (end - start) % 1440 > span_minutes
+        ]
         if break_stated and break_minutes is None:
-            notes.append("휴게시간 문구에서 길이를 읽지 못해 근로시간을 계산하지 않았습니다.")
+            notes.append("휴게시간 문구에서 길이를 정하지 못해(대안·겹침·짝이 맞지 않는 시각) 근로시간을 계산하지 않았습니다.")
+        elif outside:
+            notes.append("휴게시간이 출근부터 퇴근까지의 시간 밖에 있어 근로시간을 계산하지 않았습니다.")
         elif (break_minutes or 0) >= span_minutes:
             notes.append("휴게시간이 출근부터 퇴근까지의 시간보다 길거나 같아 근로시간을 계산하지 않았습니다.")
         else:
@@ -758,6 +847,19 @@ def compute_facts(contract: dict, criteria: dict) -> dict:
     wage_type = text(contract.get("wage_type"))
     wage_amount = to_number(contract.get("wage_amount"))
     hourly_wage, hourly_basis = None, ""
+    listed = {parse_number(item) for item in as_list(contract.get("wage_amount")) if not is_blank(item)} - {None}
+    # 금액 문구 안의 금액 후보 (연도·날짜·시간 숫자와 1,000 미만은 뺀다)
+    amounts = {
+        float(n.replace(",", "")) for item in as_list(contract.get("wage_amount")) if isinstance(item, str)
+        for n in re.findall(r"(?<![\d,.])\d[\d,]*(?:\.\d+)?(?![\d,.]|\s*[년월일시분])", item)
+        if float(n.replace(",", "")) >= 1000
+    }
+
+    if len(listed) > 1:
+        notes.append("임금 금액이 여러 개 적혀 있어 어느 금액인지 정하지 못했습니다.")
+    elif len(amounts) > 1:
+        notes.append("임금 금액 문구에 서로 다른 금액이 여러 개 있어 어느 금액인지 정하지 못했습니다.")
+        wage_amount = None
 
     if wage_amount is not None:
 
@@ -789,11 +891,18 @@ def compute_facts(contract: dict, criteria: dict) -> dict:
     if summary["min_wage_next_dropped"]:
         notes.append(f"기준서 기준 연도({base_year})가 Criteria Agent 스키마의 다음 해 항목({NEXT_MIN_WAGE_FIELD})과 맞지 않아 다음 해 최저임금을 쓰지 않았습니다.")
 
-    start_date = to_date(contract.get("contract_start_date"))
-    start_year = start_date.year if start_date else to_year(contract.get("contract_start_date"))
-    end_date = to_date(contract.get("contract_end_date"))
-    end_written = not is_blank(contract.get("contract_end_date"))
-    end_year = end_date.year if end_date else to_year(contract.get("contract_end_date"))
+    start_raw, end_raw = contract.get("contract_start_date"), contract.get("contract_end_date")
+    start_ambiguous = len(dates_in(start_raw)) > 1
+    end_ambiguous = date_ambiguous(end_raw)
+
+    start_date = None if start_ambiguous else to_date(start_raw)
+    start_year = None if start_ambiguous else (start_date.year if start_date else to_year(start_raw))
+    end_date = None if end_ambiguous else to_date(end_raw)
+    end_written = not is_blank(end_raw)
+    end_year = None if end_ambiguous else (end_date.year if end_date else to_year(end_raw))
+
+    if start_ambiguous:
+        notes.append("계약 시작일이 여러 개 적혀 있어 어느 날짜인지 정하지 못했습니다.")
 
     applicable_min, applicable_year = None, None
     next_start = date(base_year + 1, 1, 1) if base_year else None
@@ -817,6 +926,9 @@ def compute_facts(contract: dict, criteria: dict) -> dict:
     # 다음 해까지 이어지는지
     if next_start is None or (start_year is not None and start_year > base_year):
         continues_next = None
+    elif end_ambiguous:
+        continues_next = None
+        notes.append("계약 종료일이 여러 개이거나 연장·갱신 조건이 붙어 있어 다음 해까지 이어지는지 판단하지 못했습니다.")
     elif not end_written:
         continues_next = True
     elif end_date is not None:
@@ -1072,7 +1184,7 @@ def holiday_specified(contract) -> bool | None:
 
     core = field_core(contract.get("weekly_holiday"))
 
-    if re.search(r"[월화수목금토일]\s*요일|(?<![가-힣])[월화수목금토일](?![가-힣])|매주", core):
+    if re.search(r"[월화수목금토일]\s*요일|(?<![가-힣\d])[월화수목금토일](?![가-힣])", core):
         return True
 
     return None
@@ -1115,8 +1227,11 @@ def copy_clause_status(contract) -> str:
     if COPY_REFUSAL_PATTERN.search(clause):
         return "negated"
 
-    if COPY_POSITIVE_PATTERN.search(clause):
-        return "ok"
+    positive = COPY_POSITIVE_PATTERN.search(clause)
+
+    if positive:
+        # "교부한다는 규정은 없다"처럼 긍정 문구 뒤에 부정이 이어지면 뜻을 확정하지 않는다
+        return "unclear" if NEGATION_PATTERN.search(clause[positive.end():]) else "ok"
 
     if not COPY_HINT_PATTERN.search(clause):
         return "missing"
@@ -1357,6 +1472,8 @@ def cross_check(agent_level: str | None, agent_rules, engine: dict) -> dict:
     all_codes = {f["rule_code"] for f in engine["findings"]}
     decided = all_codes - set(engine["undetermined_codes"])
     agent_codes = rule_codes_in(agent_rules) & all_codes
+    # 기준서 규칙 코드에 연결되지 않은 지적 ("부당한 퇴사 제한 - …"처럼 코드 없이 쓴 문장, 기준서 밖 코드)
+    unlinked = [str(item) for item in as_list(agent_rules) if not is_blank(item) and not (rule_codes_in([item]) & all_codes)]
     engine_codes = set(engine["hit_codes"])
     agent_only = sorted((agent_codes & decided) - engine_codes)
     engine_only = sorted(engine_codes - agent_codes)
@@ -1376,6 +1493,7 @@ def cross_check(agent_level: str | None, agent_rules, engine: dict) -> dict:
         "engine_level": engine["level"],
         "level_match": status == "match",
         "agent_codes": sorted(agent_codes),
+        "agent_unlinked": unlinked,
         "agent_only": agent_only,
         "engine_only": engine_only,
         "agent_on_undetermined": sorted(agent_codes - decided),
@@ -1433,10 +1551,56 @@ def compose_summary(
         else:
             basis = "기준서 규칙에서 근거를 찾지 못해"
         sentences.append(f"평가 에이전트는 '{LEVEL_LABELS[agent_level]}'(으)로 판단했지만, {basis} '{LEVEL_LABELS[level]}'(으)로 표시합니다.")
-    elif agent_level is not None and level not in (None, "safe") and not hits:
-        sentences.append("해당한다고 확정한 규칙은 없지만 평가 에이전트가 확인이 필요하다고 판단했습니다.")
+
+    card_level = more_severe(*(h["level"] for h in hits)) or "safe"
+
+    if agent_level == level and level in LEVEL_SEVERITY and LEVEL_SEVERITY[level] > LEVEL_SEVERITY[card_level]:
+        confirmed = "기준서 규칙으로 확정한 지적은 없지만" if card_level == "safe" else f"기준서 규칙으로 확정한 지적은 '{LEVEL_LABELS[card_level]}' 수준이지만"
+        sentences.append(
+            f"{confirmed}, 규칙 계산이 판단하지 못한 규칙이나 규칙 코드 없이 적힌 평가 에이전트의 지적이 있어 "
+            f"에이전트 판단대로 '{LEVEL_LABELS[level]}'(으)로 표시합니다. 계약서 원문으로 확인하세요."
+        )
 
     return " ".join(sentences)
+
+
+# 의견 차이로 뺀 규칙에 관한 에이전트 문장을 찾을 때 쓰는 핵심어. 다음 해 최저임금은 연도로 찾는다.
+RULE_KEYWORDS = {
+    "LABOR_MIN_WAGE": ("최저임금",),
+    "LABOR_BREAK": ("휴게",),
+    "LABOR_WEEKLY_HOLIDAY": ("주휴",),
+    "LABOR_SIGN_COPY": ("서명", "날인", "교부", "사본"),
+}
+
+
+def sentence_rules(sentence: str, next_year: int | None) -> set[str]:
+    """
+    문장이 어느 규칙에 관한 것인지. 다음 해 연도가 나오면 최저임금 규칙 대신 다음 해 최저임금 규칙으로 본다.
+    """
+
+    found = {code for code, words in RULE_KEYWORDS.items() if any(word in sentence for word in words)}
+
+    if next_year and (f"{next_year}년" in sentence or "다음 해" in sentence or "내년" in sentence):
+        found.discard("LABOR_MIN_WAGE")
+        found.add("LABOR_MIN_WAGE_NEXT")
+
+    return found
+
+
+def drop_disputed(sentences: list, disputed_codes: set[str], next_year: int | None) -> list[str]:
+    """
+    의견 차이로 뺀 규칙에만 관한 문장을 뺀다. 다른 규칙에도 걸치거나 어느 규칙인지 모르는 문장은 남긴다.
+    """
+
+    kept = []
+
+    for sentence in sentences:
+        codes = sentence_rules(str(sentence), next_year)
+        if codes and codes <= disputed_codes:
+            continue
+        kept.append(str(sentence))
+
+    return kept
 
 
 def engine_review(engine: dict) -> dict:
@@ -1524,13 +1688,17 @@ def final_view(review: dict, engine: dict, agent_level: str | None, check: dict)
     cards.sort(key=lambda c: -LEVEL_SEVERITY.get(c["level"], 3))
 
     card_level = more_severe(*(c["level"] for c in cards if c["level"] in LEVEL_SEVERITY))
+    pending = [f for f in engine["findings"] if f["hit"] is None and f["rule_code"] not in final_codes]
 
     if agent_level is not None:
-        level = card_level or "safe"
-        if level == "safe" and agent_level != "safe" and not disputed:
-            # 기준서 규칙으로 근거를 대지 못한 경고는 직접 확인하도록 '확인 필요'까지만 반영한다.
-            # 근거로 든 규칙이 모두 계약서 값으로 해당하지 않으면(disputed) 경고의 근거가 없다.
-            level = "check_needed"
+        # 카드로 정한 등급보다 에이전트 등급이 높으면, 근거가 남아 있는 만큼만 따른다.
+        # - 규칙 계산이 판단하지 못한 규칙: 그 규칙의 기준서 분류까지 에이전트 판단을 따른다(분류를 모르면 제한 없음).
+        # - 규칙 코드에 연결되지 않은 지적이나 근거 없는 경고: 직접 확인하도록 '확인 필요'까지.
+        # 근거로 든 규칙이 모두 계약서 값으로 해당하지 않으면(disputed만 있음) 따를 근거가 없다.
+        allowance = more_severe(*(f["level"] or "risky" for f in pending))
+        if check["agent_unlinked"] or not agent_codes:
+            allowance = more_severe(allowance, "check_needed")
+        level = more_severe(card_level or "safe", less_severe(agent_level, allowance))
         incomplete = False
     elif engine["level"] is not None:
         level = more_severe(engine["level"], card_level)
@@ -1542,10 +1710,13 @@ def final_view(review: dict, engine: dict, agent_level: str | None, check: dict)
 
     disagree = check["status"] == "mismatch" or (agent_level is not None and agent_level != level)
 
-    # 해당 규칙이 없다고 결론 났으면 에이전트가 쓴 요청 문장은 쓰지 않는다(근거 없는 요청이 된다)
+    # 해당 규칙이 없다고 결론 났으면 에이전트가 쓴 요청 문장은 쓰지 않는다(근거 없는 요청이 된다).
+    # 일부만 의견 차이면 그 규칙에만 관한 문장을 뺀다.
     agent_text = agent_level is not None and level != "safe"
+    next_year = engine["facts"]["base_year"] + 1 if engine["facts"]["base_year"] else None
+    agent_requests = drop_disputed(review["recommendations"], disputed_codes, next_year) if agent_text else []
 
-    recommendations = list(review["recommendations"]) if (agent_text or agent_level is None) else []
+    recommendations = list(agent_requests) if agent_level is not None else list(review["recommendations"])
     engine_actions = {f["rule_code"]: f["recommended_action"] for f in engine["findings"]}
 
     for code in check["engine_only"]:
@@ -1571,10 +1742,10 @@ def final_view(review: dict, engine: dict, agent_level: str | None, check: dict)
         # 근로자가 할 일 (에이전트 문장 + 에이전트가 놓친 규칙의 기준서 권장 행동)
         "recommendations": recommendations,
         # 사장님께 그대로 보낼 문장. 평가 에이전트가 사업주용으로 쓴 문장만 쓴다.
-        "requests": list(review["recommendations"]) if agent_text else [],
+        "requests": agent_requests,
         "confirmed_items": confirmed,
-        "missing_items": list(dict.fromkeys(engine["missing_items"] + review["missing_items"])),
-        "pending": [f for f in engine["findings"] if f["hit"] is None and f["rule_code"] not in final_codes],
+        "missing_items": list(dict.fromkeys(engine["missing_items"] + drop_disputed(review["missing_items"], disputed_codes, next_year))),
+        "pending": pending,
         # 에이전트는 지적했지만 규칙 계산이 계약서 값으로 통과를 확인한 규칙 (등급에 넣지 않음)
         "disputed": disputed,
         "disagree": disagree,

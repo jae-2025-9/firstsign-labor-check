@@ -487,7 +487,7 @@ def render_details(result: dict):
             st.caption(
                 "기준서 원문 대조: Criteria Agent가 읽은 "
                 + ", ".join(result["criteria_repaired"])
-                + " 점검 조건이 PDF 원문과 달라 원문 문장으로 바로잡았습니다."
+                + " 규칙의 내용이 잘려 있어 PDF 원문 표로 바로잡았습니다."
             )
 
     final = result["final"]

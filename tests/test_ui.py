@@ -77,7 +77,7 @@ def test_partial_cross_check_is_not_shown_as_match(monkeypatch):
 
     monkeypatch.setattr(service, "demo_inputs", recorded_with_changed_conditions)
     # 기준서 원문도 바뀐 것으로 본다 (원문과 같으면 원문 대조가 조건을 되돌린다)
-    monkeypatch.setattr(service, "source_conditions", lambda *_: {})
+    monkeypatch.setattr(service, "source_table", lambda *_: {})
     at = run_sample("1")
     text = page_text(at)
     assert "교차 검증 일부만 완료" in text

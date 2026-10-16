@@ -47,7 +47,7 @@ from review_builder import build_review_input
 from rules import (
     LEVELS,
     RULE_CODE_PATTERN,
-    apply_source_conditions,
+    apply_source_table,
     as_list,
     compute_facts,
     criteria_problems,
@@ -116,25 +116,37 @@ def criteria_source_codes(criteria_file: Path = CRITERIA_FILE) -> set[str] | Non
     return codes or None
 
 
-def criteria_source_conditions(criteria_file: Path = CRITERIA_FILE) -> dict[str, str]:
+# 기준서 규칙 표의 머리글 낱말 → 추출 결과 항목 이름 (원문으로 바로잡을 수 있는 칸)
+SOURCE_COLUMNS = (("점검 조건", "check_condition"), ("법령", "legal_basis"), ("권장", "recommended_action"))
+
+# 페이지 높이의 이 비율(약 34pt)보다 위·아래 가장자리에 있는 글자는 머리말·바닥글·쪽번호로 보고 건너뛴다
+PAGE_MARGIN = 0.04
+
+
+def criteria_source_table(criteria_file: Path = CRITERIA_FILE) -> dict[str, dict[str, str]]:
     """
-    기준서 PDF 원문의 규칙 표에서 규칙별 점검 조건 칸을 글자 위치로 읽는다.
+    기준서 PDF 원문의 규칙 표를 글자 위치로 읽어 {규칙 코드: {점검 조건, 법령 근거, 권장 행동}}을 만든다.
 
     표를 줄 단위로 꺼내면 옆 칸 글자가 섞이고, 페이지를 넘는 칸은 끝이 잘려
-    Criteria Agent도 조건을 잘못 읽을 수 있다. 머리글 '규칙 코드'·'점검 조건'과
-    그 오른쪽 칸의 가로 위치로 점검 조건 칸 글자만 모은다.
+    Criteria Agent도 잘못 읽을 수 있다. 머리글 칸의 가로 위치로 칸마다 글자를 모은다.
+    머리말·바닥글(페이지 위아래 가장자리)과 다음 페이지에 반복된 머리글은 건너뛴다.
     표를 찾지 못하면 빈 dict(바로잡지 않음)를 돌려준다.
     """
 
     pieces: list[tuple[float, str]] = []
 
-    def visit(text_, cm, tm, font, size):
-        if text_.strip():
-            pieces.append((tm[4] * cm[0] + tm[5] * cm[2] + cm[4], text_.strip()))
-
     try:
         for page in PdfReader(str(criteria_file)).pages:
+
+            height = float(page.mediabox.height)
+
+            def visit(text_, cm, tm, font, size, height=height):
+                y = tm[4] * cm[1] + tm[5] * cm[3] + cm[5]
+                if text_.strip() and height * PAGE_MARGIN < y < height * (1 - PAGE_MARGIN):
+                    pieces.append((tm[4] * cm[0] + tm[5] * cm[2] + cm[4], text_.strip()))
+
             page.extract_text(visitor_text=visit)
+
     except (OSError, ValueError, KeyError, TypeError, PdfReadError):
         return {}
 
@@ -145,40 +157,60 @@ def criteria_source_conditions(criteria_file: Path = CRITERIA_FILE) -> dict[str,
         return {}
 
     head = pieces[header:first_code]
+    head_texts = {t for _, t in head}
     code_x = pieces[header][0]
-    condition_x = next((x for x, t in head if "점검 조건" in t), None)
 
-    if condition_x is None:
+    # 칸 시작 위치와 그 칸의 항목 이름 (분류처럼 바로잡지 않는 칸은 None)
+    starts: dict[float, str | None] = {}
+    for x, t in head[1:]:
+        key = next((name for word, name in SOURCE_COLUMNS if word in t), None)
+        near = next((sx for sx in starts if abs(sx - x) < 2), None)
+        if near is None:
+            starts[x] = key
+        elif key:
+            starts[near] = key
+
+    if "check_condition" not in starts.values():
         return {}
 
-    next_x = min((x for x, _ in head if x > condition_x + 1), default=float("inf"))
-    conditions: dict[str, list[str]] = {}
+    columns = sorted(starts.items())
+    table_left = columns[0][0]
+    rows: dict[str, dict[str, list[str]]] = {}
     current = None
 
     for x, t in pieces[first_code:]:
+
+        if t in head_texts:
+            continue  # 다음 페이지에 반복된 머리글
+
         if abs(x - code_x) < 2 and RULE_CODE_PATTERN.fullmatch(t):
             current = t
-            conditions[current] = []
-        elif x < condition_x - 2:
-            break  # 규칙 칸보다 왼쪽에서 다른 글이 시작되면 표가 끝난 것
-        elif x < next_x - 2 and current:
-            conditions[current].append(t)
+            rows[current] = {}
+            continue
 
-    return {code: " ".join(parts) for code, parts in conditions.items() if parts}
+        if x < table_left - 2:
+            break  # 규칙 칸보다 왼쪽에서 다른 글이 시작되면 표가 끝난 것
+
+        key = next((name for start, name in reversed(columns) if x >= start - 2), None)
+
+        if current and key:
+            rows[current].setdefault(key, []).append(t)
+
+    return {code: {key: " ".join(parts) for key, parts in cells.items()} for code, cells in rows.items() if cells}
 
 
 @lru_cache(maxsize=4)
-def source_conditions_for(path: str, digest: str) -> dict[str, str]:
+def source_table_for(path: str, digest: str) -> dict[str, dict[str, str]]:
 
-    return criteria_source_conditions(Path(path))
+    return criteria_source_table(Path(path))
 
 
-def source_conditions(criteria_file: Path = CRITERIA_FILE) -> dict[str, str]:
+def source_table(criteria_file: Path = CRITERIA_FILE) -> dict[str, dict[str, str]]:
     """
-    기준서 원문의 점검 조건. PDF 내용 해시로 캐시해 기준서를 바꾸면 다시 읽는다.
+    기준서 원문의 규칙 표. PDF 내용 해시로 캐시해 기준서를 바꾸면 다시 읽는다.
     """
 
-    return source_conditions_for(str(criteria_file), file_sha256(criteria_file))
+    return source_table_for(str(criteria_file), file_sha256(criteria_file))
 
 
 def load_or_extract_criteria(
@@ -334,10 +366,10 @@ def run_workflow(
 
     report(2, "점검 기준서를 불러오고 있습니다 (Criteria Agent)")
     extracted = load_or_extract_criteria(CRITERIA_FILE, paths["criteria"])
-    criteria, repaired = apply_source_conditions(extracted, source_conditions(CRITERIA_FILE))
+    criteria, repaired = apply_source_table(extracted, source_table(CRITERIA_FILE))
 
     if repaired:
-        print(f"기준서 원문 대조: {', '.join(repaired)} 점검 조건을 PDF 원문 문장으로 바로잡았습니다.")
+        print(f"기준서 원문 대조: {', '.join(repaired)} 규칙의 잘린 내용을 PDF 원문으로 바로잡았습니다.")
 
     if not looks_like_contract(contract):
         return {

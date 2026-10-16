@@ -119,3 +119,27 @@ def test_recorded_agent_result_sample3(monkeypatch):
     assert result["cross_check"]["status"] == "mismatch"
     assert {"LABOR_BREAK", "LABOR_WEEKLY_HOLIDAY"} <= set(result["cross_check"]["engine_only"])
     assert {c["rule_code"] for c in result["final"]["cards"]} >= {"LABOR_MIN_WAGE", "LABOR_PENALTY", "LABOR_BREAK"}
+
+
+@pytest.mark.parametrize("sample_id,agent,final,cards,disputed", [
+    ("1", "safe", "safe", set(), set()),
+    ("2", "risky", "check_needed",
+     {"LABOR_REQUIRED_TERMS", "LABOR_BREAK", "LABOR_WEEKLY_HOLIDAY", "LABOR_SIGN_COPY", "LABOR_MIN_WAGE_NEXT"}, set()),
+    ("4", "safe", "safe", set(), {"LABOR_SIGN_COPY", "LABOR_MIN_WAGE_NEXT"}),
+])
+def test_recorded_agent_results(monkeypatch, sample_id, agent, final, cards, disputed):
+    # fixtures/live의 실제 에이전트 결과: 등급은 기준서 분류로, 계산상 통과인 지적은 의견 차이로
+    monkeypatch.setattr(service, "FIXTURE_DIR", config.FIXTURE_DIR)
+    result = service.run_review_service(sample_id=sample_id)
+    view = result["final"]
+    assert result["source"] == "recorded"
+    assert result["agent_level"] == agent
+    assert result["final_level"] == final
+    assert {c["rule_code"] for c in view["cards"]} == cards
+    assert {d["rule_code"] for d in view["disputed"]} == disputed
+    assert view["pending"] == []
+    assert result["criteria_repaired"] == ["LABOR_MIN_WAGE_NEXT"]
+    # 잘린 권장 행동이 그대로 나오지 않는다
+    assert all(not action.rstrip().endswith("10,700") for action in view["recommendations"])
+    if final == "safe":
+        assert view["requests"] == [] and view["recommendations"] == []
