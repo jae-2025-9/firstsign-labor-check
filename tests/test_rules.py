@@ -466,6 +466,12 @@ AMBIGUOUS_INPUTS = [
     ({"work_end_time": "18:00", "break_time": "평일 12:00~12:30, 주말 12:00~13:00"}, "LABOR_BREAK"),
     ({"weekly_holiday": "매주 협의하여 정한다."}, "LABOR_WEEKLY_HOLIDAY"),
     ({"copy_delivery_clause": "근로자에게 계약서를 교부한다는 규정은 없다."}, "LABOR_SIGN_COPY"),
+    ({"work_end_time": "18:00", "break_time": "12:00~13:00 (금요일은 12:00~12:15)"}, "LABOR_BREAK"),
+    ({"work_end_time": "18:00", "break_time": "12:00~13:00 (또는 12:00~12:30)"}, "LABOR_BREAK"),
+    ({"wage_amount": 10500, "contract_end_date": "2026-12-31 (연장하지 않을 경우)"}, "LABOR_MIN_WAGE_NEXT"),
+    ({"wage_amount": 10500, "contract_end_date": "2026-12-31 또는 기간의 정함 없음"}, "LABOR_MIN_WAGE_NEXT"),
+    ({"contract_start_date": "2026-12-10 또는 2026년 11월", "work_end_time": "13:00",
+      "break_time": "없음 (근로자가 휴게 미사용을 명시적으로 요청함)"}, "LABOR_BREAK"),
 ]
 
 
@@ -475,7 +481,8 @@ def test_ambiguous_input_never_disputes_agent(criteria, changes, code):
     contract = {**load("contract_sample1.json"), **changes}
     engine, final = run_final(contract, criteria, "check_needed", [f"{code} - 근거"], recommendations=["확인해 주세요."])
     finding = next(f for f in engine["findings"] if f["rule_code"] == code)
-    assert finding["hit"] is None, changes
+    # 모호한 값으로 통과를 확정하지 않는다 (보류, 또는 예외를 적용하지 않아 해당)
+    assert finding["hit"] is not False, changes
     assert code in {c["rule_code"] for c in final["cards"]}
     assert final["disputed"] == []
     assert final["level"] == finding["level"]
@@ -501,6 +508,10 @@ NORMAL_INPUTS = [
     ({"wage_amount": 10500, "contract_end_date": "2026-12-31 (연장 없음)"}, "LABOR_MIN_WAGE_NEXT"),
     ({"copy_delivery_clause": "근로자에게 계약서를 교부한다. 교부 비용은 없다."}, "LABOR_SIGN_COPY"),
     ({"is_signed": ["true", "예"]}, "LABOR_SIGN_COPY"),
+    ({"wage_amount": "2026-10-01 기준 10,800원"}, "LABOR_MIN_WAGE"),
+    ({"wage_amount": "10.8천원"}, "LABOR_MIN_WAGE"),
+    ({"wage_amount": 10500, "contract_end_date": "2026-12-31 (자동 갱신 없음)"}, "LABOR_MIN_WAGE_NEXT"),
+    ({"break_time": "12:00 ~ 12:30 (30분)"}, "LABOR_BREAK"),
 ]
 
 
@@ -561,6 +572,43 @@ def test_every_card_keeps_an_action(criteria):
     assert any("빠진 항목" in r for r in final["recommendations"])
 
 
+def test_risky_clause_keeps_warning_when_codes_are_refuted(criteria):
+    # 에이전트가 적은 위험 조항 원문이 남아 있으면, 무관한 코드가 반박돼도 안심으로 내리지 않는다
+    contract = {**load("contract_sample1.json"), "special_terms": ["근로자는 계약을 중도 해지하려면 사업주의 승인을 받아야 한다."]}
+    _, final = run_final(contract, criteria, "risky", ["LABOR_SIGN_COPY"],
+                         risky_clauses=["근로자는 계약을 중도 해지하려면 사업주의 승인을 받아야 한다."],
+                         recommendations=["계약 중도 해지 제한 조항을 삭제해 주세요."])
+    assert final["level"] == "risky"
+    assert final["requests"] == ["계약 중도 해지 제한 조항을 삭제해 주세요."]
+
+    contract = {**load("contract_sample1.json"), "wage_amount": ["10,800원 (수습기간 9,500원)"]}
+    _, final = run_final(contract, criteria, "risky", ["LABOR_SIGN_COPY"], risky_clauses=["수습기간에는 시급 9,500원을 지급한다."])
+    assert final["level"] == "risky"
+
+    _, final = run_final(load("contract_sample1.json"), criteria, "risky", ["LABOR_SIGN_COPY"], risky_clauses=["사장님이 자주 화를 낸다."])
+    assert final["level"] == "check_needed"
+
+
+def test_generic_word_does_not_keep_refuted_request(criteria):
+    contract = {**load("contract_sample1.json"), "job_description": ""}
+    _, final = run_final(contract, criteria, "check_needed", ["LABOR_REQUIRED_TERMS", "LABOR_BREAK"],
+                         recommendations=["휴게시간이 없으니 계약서에 기재해 주세요."])
+    assert final["requests"] == []
+    assert any("빠진 항목" in r for r in final["recommendations"])
+
+
+def test_requests_missing_lists_uncovered_cards(criteria):
+    # 사장님 메시지(에이전트 문장)가 다루지 않은 지적은 따로 알린다
+    engine = evaluate(load("contract_sample3.json"), criteria)
+    codes = [f"{c} - 근거" for c in engine["hit_codes"]]
+    from rules import final_view
+    review = agent_review(review_level="risky", matched_rules=codes, recommendations=["위약금 조항을 삭제해 주세요."])
+    final = final_view(review, engine, "risky", cross_check("risky", codes, engine))
+    assert final["requests"] == ["위약금 조항을 삭제해 주세요."]
+    assert "위약금·손해배상·임금 공제 조항" not in final["requests_missing"]
+    assert "최저임금 미달" in final["requests_missing"]
+
+
 def test_review_input_keeps_ambiguous_raw_values():
     # 모호한 값은 평가 입력 문서에 원문 그대로 남겨 평가 에이전트가 판단할 수 있게 한다
     from review_builder import contract_value
@@ -569,6 +617,7 @@ def test_review_input_keeps_ambiguous_raw_values():
     value = contract_value({"wage_amount": "10,800원 (수습 3개월은 9,500원)"}, "wage_amount")
     assert "9,500원" in value and "정하지 못함" in value
     assert contract_value({"wage_amount": [10800]}, "wage_amount") == "10800"
+    assert contract_value({"wage_amount": 10319.875}, "wage_amount") == "10319.875"  # 반올림하지 않는다
     assert "정하지 못함" in contract_value({"is_signed": [True, False]}, "is_signed")
     assert contract_value({"is_signed": [True]}, "is_signed") == "예"
     assert contract_value({}, "is_signed") == "(비어 있음)"

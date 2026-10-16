@@ -343,7 +343,7 @@ def to_bool(value) -> bool | None:
 DATE_PATTERN = re.compile(r"(\d{4})\s*[-./년]\s*(\d{1,2})\s*[-./월]\s*(\d{1,2})")
 
 # 계약기간이 조건에 따라 달라지는 표현. 날짜가 하나만 적혀 있어도 그 날짜로 끝난다고 단정할 수 없다.
-RENEWAL_PATTERN = re.compile(r"연장|갱신|재계약|자동")
+RENEWAL_PATTERN = re.compile(r"(?:자동\s*)?(?:연장|갱신|재계약)")
 
 
 # 일까지 없는 연·월 ("2027년 12월", "2027-12")
@@ -421,7 +421,16 @@ def date_ambiguous(value) -> bool:
 
     joined = " ".join(str(item) for item in as_list(value))
 
-    return any(not RENEWAL_DENIED_PATTERN.search(joined[m.end():m.end() + 8]) for m in RENEWAL_PATTERN.finditer(joined))
+    if re.search(r"또는|혹은", joined):
+        return True
+
+    for match in RENEWAL_PATTERN.finditer(joined):
+        tail = joined[match.end():match.end() + 15]
+        # "연장 없음"은 조건이 아니지만 "연장하지 않을 경우"는 연장 여부에 따른 조건이다
+        if not RENEWAL_DENIED_PATTERN.search(tail[:8]) or re.search(r"(?:않|아니)\S{0,3}\s*(?:경우|때|면)", tail):
+            return True
+
+    return False
 
 
 def normalize_level(value) -> str | None:
@@ -536,6 +545,11 @@ def parse_break(value) -> tuple[bool, int | None]:
         return False, None
 
     core = re.sub(r"\([^)]*\)", " ", s)
+    notes_in_brackets = " ".join(re.findall(r"\(([^)]*)\)", s))
+
+    # "12:00~13:00 (금요일은 12:00~12:15)"처럼 괄호 안에 시각·요일·대안이 있으면 적용 조건이라 길이를 정하지 않는다
+    if parse_times(notes_in_brackets) or BREAK_ALTERNATIVE_PATTERN.search(notes_in_brackets) or BREAK_BY_DAY_PATTERN.search(notes_in_brackets):
+        return True, None
 
     if BREAK_ALTERNATIVE_PATTERN.search(core):
         return True, None
@@ -924,11 +938,16 @@ def compute_facts(contract: dict, criteria: dict) -> dict:
     wage_type = text(contract.get("wage_type"))
     wage_amount = to_number(contract.get("wage_amount"))
     hourly_wage, hourly_basis = None, ""
+    candidates = amount_candidates(contract.get("wage_amount"))
+
     if wage_amount is None and not is_blank(contract.get("wage_amount")):
         notes.append("임금 금액이 여러 개이거나 읽을 수 없어 어느 금액인지 정하지 못했습니다.")
-    elif len(amount_candidates(contract.get("wage_amount"))) > 1:
+    elif len(candidates) > 1:
         notes.append("임금 금액 문구에 서로 다른 금액이 여러 개 있어 어느 금액인지 정하지 못했습니다.")
         wage_amount = None
+    elif len(candidates) == 1 and wage_amount is not None:
+        # "2026-10-01 기준 10,800원", "10.8천원"처럼 첫 숫자가 금액이 아닌 문구는 후보 금액을 쓴다
+        wage_amount = next(iter(candidates))
 
     if wage_amount is not None:
 
@@ -1225,7 +1244,7 @@ def check_break(contract, facts):
 
         break_text = text(contract.get("break_time"))
         explicit = bool(EXPLICIT_NO_BREAK_PATTERN.search(break_text)) and not NO_REQUEST_PATTERN.search(break_text)
-        start = to_date(contract.get("contract_start_date"))
+        start = to_date(facts["contract_start_date"])
 
         if explicit and start is not None and start >= BREAK_EXCEPTION_START:
             reason = f"정확히 4시간 근무이고 근로자가 휴게 미사용을 명시적으로 요청해 {BREAK_EXCEPTION_START.isoformat()}부터의 예외에 해당합니다."
@@ -1643,9 +1662,9 @@ def compose_summary(
 
 # 의견 차이로 뺀 규칙에 관한 에이전트 문장을 찾을 때 쓰는 핵심어. 다음 해 최저임금은 연도로 찾는다.
 RULE_KEYWORDS = {
-    "LABOR_MIN_WAGE": ("최저임금",),
-    "LABOR_PENALTY": ("위약", "손해배상", "배상", "공제", "벌금", "퇴사", "퇴직", "사직", "그만"),
-    "LABOR_REQUIRED_TERMS": ("기재", "필수", "업무", "근무장소", "근무 장소", "임금지급", "지급일", "연차", "소정근로", "계약기간"),
+    "LABOR_MIN_WAGE": ("최저임금", "시급"),
+    "LABOR_PENALTY": ("위약", "손해배상", "배상", "공제", "벌금", "퇴사", "퇴직", "사직", "그만", "해지"),
+    "LABOR_REQUIRED_TERMS": ("업무", "근무장소", "근무 장소", "임금지급", "지급일", "지급 방법", "연차", "소정근로", "계약기간"),
     "LABOR_BREAK": ("휴게",),
     "LABOR_WEEKLY_HOLIDAY": ("주휴",),
     "LABOR_SIGN_COPY": ("서명", "날인", "교부", "사본"),
@@ -1781,7 +1800,9 @@ def final_view(review: dict, engine: dict, agent_level: str | None, check: dict)
         next_year = engine["facts"]["base_year"] + 1 if engine["facts"]["base_year"] else None
         linked = set().union(*(sentence_rules(e, next_year) for e in evidence)) if evidence else set()
         allowance = more_severe(*(f["level"] or "risky" for f in pending if f["rule_code"] in linked))
-        if check["agent_unlinked"] or (not agent_codes and (pending or review["risky_clauses"] or review["missing_items"])):
+        # 어느 규칙에도 이어지지 않는 조항 원문은 해소되지 않은 근거다
+        stray = [c for c in review["risky_clauses"] if not sentence_rules(str(c), next_year)]
+        if check["agent_unlinked"] or stray or (not agent_codes and (pending or review["risky_clauses"] or review["missing_items"])):
             allowance = more_severe(allowance, "check_needed")
         level = more_severe(card_level or "safe", less_severe(agent_level, allowance))
         incomplete = False
@@ -1831,6 +1852,8 @@ def final_view(review: dict, engine: dict, agent_level: str | None, check: dict)
         "recommendations": recommendations,
         # 사장님께 그대로 보낼 문장. 평가 에이전트가 사업주용으로 쓴 문장만 쓴다.
         "requests": agent_requests,
+        # 사장님 메시지(에이전트 문장)가 다루지 않은 지적 규칙의 제목. 화면에서 직접 덧붙이도록 알린다.
+        "requests_missing": [c["title"] for c in cards if c["rule_code"] not in covered] if agent_requests else [],
         "confirmed_items": confirmed,
         "missing_items": list(dict.fromkeys(engine["missing_items"] + drop_disputed(review["missing_items"], disputed_codes, next_year))),
         "pending": pending,

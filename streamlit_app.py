@@ -457,6 +457,8 @@ def render_actions(result: dict):
     message += "\n".join(f"{i}. {request}" for i, request in enumerate(requests, start=1))
     message += "\n\n확인 후 수정된 계약서를 받을 수 있을까요? 감사합니다."
     st.caption("사장님께 보낼 메시지 초안 · 평가 에이전트 작성 (오른쪽 위 아이콘으로 복사)")
+    if result["final"].get("requests_missing"):
+        st.caption("메시지에 빠진 지적: " + ", ".join(result["final"]["requests_missing"]) + ". 위 '다음에 할 일'을 보고 덧붙이세요.")
     st.code(message, language=None, wrap_lines=True)
 
 

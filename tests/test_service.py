@@ -143,3 +143,5 @@ def test_recorded_agent_results(monkeypatch, sample_id, agent, final, cards, dis
     assert all(not action.rstrip().endswith("10,700") for action in view["recommendations"])
     if final == "safe":
         assert view["requests"] == [] and view["recommendations"] == []
+    if sample_id == "2":
+        assert view["requests_missing"] == ["다음 해 최저임금 미달 예정"]

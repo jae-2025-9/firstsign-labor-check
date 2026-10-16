@@ -130,7 +130,8 @@ def contract_value(contract: dict, key: str) -> str:
         number = to_number(value)
         plain = all(isinstance(item, (int, float)) or re.fullmatch(r"[\d,.\s]+원?", str(item)) for item in as_list(value) if not is_blank(item))
         if number is not None and plain:
-            return f"{number:.0f}"
+            # 반올림하지 않는다 (10319.875원을 10320으로 적으면 최저임금 이상처럼 보인다)
+            return str(int(number)) if number.is_integer() else f"{number}"
         if not raw:
             return EMPTY
         return raw if number is not None and len(amount_candidates(value)) <= 1 else f"{raw} (금액을 하나로 정하지 못함)"
